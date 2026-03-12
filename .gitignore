@@ -1,0 +1,8 @@
+CLAUDE.md
+DIGGS v2 2/
+viewer.html
+viewer_with_data.html
+*.XML
+src/vendor/
+__pycache__/
+.DS_Store

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DIGGS Viewer</title>
+  <style>
+    /* APP_CSS */
+  </style>
+</head>
+<body>
+
+  <!-- Embedded DIGGS XML (injected by build.py or saved by user) -->
+  <script type="application/xml" id="embedded-diggs"><!-- DIGGS_XML --></script>
+
+  <header class="app-header">
+    <div class="header-left">
+      <h1>DIGGS Viewer</h1>
+      <div class="subtitle">Geotechnical Data Viewer &middot; v0.1.0</div>
+    </div>
+    <div class="header-actions" id="header-actions">
+      <!-- Populated by JS based on state -->
+    </div>
+  </header>
+
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="map">Map</button>
+    <button class="tab-btn" data-tab="spt">SPT Analysis</button>
+    <button class="tab-btn" data-tab="cpt">CPT Analysis</button>
+    <button class="tab-btn" data-tab="boring-log">Boring Log</button>
+    <button class="tab-btn" data-tab="cross-section">Cross Section</button>
+    <button class="tab-btn" data-tab="lab-tests">Lab Tests</button>
+    <button class="tab-btn" data-tab="interpretation">Interpretation</button>
+  </nav>
+
+  <!-- Drop zone (shown when no embedded XML) -->
+  <div id="drop-zone" style="display: none;">
+    <div class="drop-area">
+      <div class="drop-icon">&#128194;</div>
+      <h2>Open DIGGS File</h2>
+      <p>Drag and drop a DIGGS XML file here, or click to browse</p>
+      <label class="file-btn">
+        Choose File
+        <input type="file" id="file-input" accept=".xml,.diggs,.XML,.DIGGS">
+      </label>
+    </div>
+  </div>
+
+  <!-- Loading spinner -->
+  <div id="loading">
+    <div class="spinner"></div>
+    <div class="loading-text">Loading...</div>
+  </div>
+
+  <!-- Hidden file input for "Load new file" from header -->
+  <input type="file" id="header-file-input" accept=".xml,.diggs,.XML,.DIGGS" style="display:none;">
+
+  <!-- About modal -->
+  <div class="modal-overlay" id="about-modal" onclick="if(event.target===this)closeAbout()">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>About DIGGS Viewer</h2>
+        <button class="modal-close" onclick="closeAbout()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>A self-contained viewer for <strong>DIGGS</strong> (Data Interchange for Geotechnical and Geoenvironmental Specialists) XML files. Open it, see your data — no installs, no server, no internet required.</p>
+        <p class="version-line">Version 0.1.0</p>
+        <div class="credit">
+          Maintained by <strong>DIGGS</strong>.<br>
+          <a href="https://github.com/DIGGSml/DIGGS_standalone_viewer" target="_blank" rel="noopener">github.com/DIGGSml/DIGGS_standalone_viewer</a>
+        </div>
+        <div class="credit" style="margin-top: 10px;">
+          Based on <strong>DIGGS Analyzer</strong> by <strong>Ground Decoder</strong> (University of Utah), winner of the 2026 DIGGS Student Hackathon.<br>
+          Team: Ripon Chandra Malo (Lead), Dr. Tong Qiu, Dr. Kami Mohammadi
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main content (shown after parsing) -->
+  <div id="main-content" style="display: none;">
+    <div class="tab-panel active" id="tab-overview"></div>
+    <div class="tab-panel" id="tab-map"></div>
+    <div class="tab-panel" id="tab-spt"></div>
+    <div class="tab-panel" id="tab-cpt"></div>
+    <div class="tab-panel" id="tab-boring-log"></div>
+    <div class="tab-panel" id="tab-cross-section"></div>
+    <div class="tab-panel" id="tab-lab-tests"></div>
+    <div class="tab-panel" id="tab-interpretation"></div>
+  </div>
+
+  <!-- Plotly.js (basic bundle) -->
+  <script><!-- PLOTLY_JS --></script>
+
+  <!-- Application JS -->
+  <script>
+    // PARSER_JS
+  </script>
+  <script>
+    // TABLES_JS
+  </script>
+  <script>
+    // CHARTS_JS
+  </script>
+  <script>
+    // BORING_LOG_JS
+  </script>
+  <script>
+    // CROSS_SECTION_JS
+  </script>
+  <script>
+    // CALCULATIONS_JS
+  </script>
+  <script>
+    // UI_JS
+  </script>
+</body>
+</html>
