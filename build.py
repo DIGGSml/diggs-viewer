@@ -11,10 +11,12 @@ Usage:
 """
 
 import argparse
+import urllib.request
 from pathlib import Path
 
 
 SRC = Path(__file__).parent / "src"
+PLOTLY_URL = "https://cdn.plot.ly/plotly-basic-2.35.2.min.js"
 
 JS_FILES = [
     ("// PARSER_JS", SRC / "js" / "parser.js"),
@@ -34,21 +36,16 @@ def build(xml_path: Path | None = None, output_path: Path | None = None) -> Path
     css = (SRC / "css" / "styles.css").read_text(encoding="utf-8")
     template = template.replace("    /* APP_CSS */", css)
 
-    # Inline Plotly
+    # Inline Plotly — download if not cached locally
     plotly_path = SRC / "vendor" / "plotly-basic.min.js"
-    if plotly_path.exists():
-        plotly_js = plotly_path.read_text(encoding="utf-8")
-    else:
-        # Use CDN fallback placeholder
-        plotly_js = ""
-        # Replace the script tag with a CDN link
-        template = template.replace(
-            '<script><!-- PLOTLY_JS --></script>',
-            '<script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>',
-        )
+    if not plotly_path.exists():
+        print(f"Downloading Plotly.js...")
+        plotly_path.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(PLOTLY_URL, plotly_path)
+        print(f"Saved to {plotly_path}")
 
-    if plotly_js:
-        template = template.replace("<!-- PLOTLY_JS -->", plotly_js)
+    plotly_js = plotly_path.read_text(encoding="utf-8")
+    template = template.replace("<!-- PLOTLY_JS -->", plotly_js)
 
     # Inline app JS
     for placeholder, js_path in JS_FILES:
@@ -80,8 +77,7 @@ def build(xml_path: Path | None = None, output_path: Path | None = None) -> Path
     else:
         print("No XML embedded — viewer will show drag-and-drop file picker")
 
-    plotly_status = "bundled" if (SRC / "vendor" / "plotly-basic.min.js").exists() else "CDN"
-    print(f"Plotly: {plotly_status}")
+    print("Plotly: bundled")
 
     return output_path
 
