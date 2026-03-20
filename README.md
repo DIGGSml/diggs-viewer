@@ -2,9 +2,13 @@
 
 A self-contained HTML viewer for **DIGGS** (Data Interchange for Geotechnical and Geoenvironmental Specialists) XML files. Open it, see your data — no installs, no server, no internet required.
 
-## How It Works
+## Quick Start
 
-DIGGS Viewer builds a single `.html` file that embeds a DIGGS XML file inside it. Recipients double-click the HTML, it opens in any browser, and they can explore the data immediately.
+**No install required** — download [`viewer.html`](viewer.html) from this repo, open it in your browser, and drag-and-drop a DIGGS XML file.
+
+## Building from Source
+
+Use `build.py` to bundle a DIGGS XML file into a self-contained HTML viewer that anyone can open:
 
 ```bash
 # Build a viewer with embedded data

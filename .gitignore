@@ -1,7 +1,6 @@
 CLAUDE.md
 DIGGS v2 2/
-viewer.html
-viewer_with_data.html
+viewer_*.html
 *.XML
 src/vendor/
 __pycache__/
