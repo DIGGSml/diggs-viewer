@@ -9,7 +9,10 @@ function createStyledTable(data, title, headerColor, maxHeight) {
   headerColor = headerColor || '#4680ff';
   maxHeight = maxHeight || '500px';
 
-  const columns = Object.keys(data[0]);
+  // Drop columns where every row is null / undefined / empty / NaN
+  const _isEmpty = (v) => v == null || v === '' || (typeof v === 'number' && isNaN(v));
+  const columns = Object.keys(data[0]).filter(k => data.some(row => !_isEmpty(row[k])));
+  if (columns.length === 0) return '<p class="no-data">No data available</p>';
 
   let html = `<div class="styled-table-wrapper">`;
   html += `<div class="table-header" style="background: linear-gradient(135deg, ${headerColor}, ${headerColor}cc);">`;

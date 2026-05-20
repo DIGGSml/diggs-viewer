@@ -25,8 +25,22 @@ const USCS_PATTERNS = {
   OL:  { color: '#6B8E23', hatch: 'cross',      edge: '#556B2F', label: 'Organic Silt' },
   OH:  { color: '#556B2F', hatch: 'cross-dense', edge: '#2F4F4F', label: 'Organic Clay' },
   PT:  { color: '#2F4F4F', hatch: 'cross-dense', edge: '#1C3C3C', label: 'Peat' },
-  // Fill
-  FILL:{ color: '#A9A9A9', hatch: 'plus',       edge: '#808080', label: 'Fill' },
+  TOPSOIL: { color: '#6B5335', hatch: 'cross-dense', edge: '#3B2C18', label: 'Topsoil' },
+  // Fill / surface materials (DOT-style codes)
+  FILL: { color: '#A9A9A9', hatch: 'plus',     edge: '#808080', label: 'Fill' },
+  FL:   { color: '#A9A9A9', hatch: 'plus',     edge: '#808080', label: 'Fill' },
+  ASPH: { color: '#3B3B3B', hatch: 'solid',    edge: '#1A1A1A', label: 'Asphalt' },
+  CRA:  { color: '#A0A0A0', hatch: 'triangle', edge: '#606060', label: 'Crushed Stone' },
+  // Rock / bedrock
+  ROCK: { color: '#9090A0', hatch: 'brick',       edge: '#444455', label: 'Rock' },
+  BR:   { color: '#9090A0', hatch: 'brick',       edge: '#444455', label: 'Bedrock' },
+  WR:   { color: '#A89888', hatch: 'brick-cross', edge: '#553344', label: 'Weathered Rock' },
+  DBS:  { color: '#5C5C70', hatch: 'vee',         edge: '#2A2A40', label: 'Diabase' },
+  SS:   { color: '#D9C49E', hatch: 'brick',       edge: '#8B7355', label: 'Sandstone' },
+  LS:   { color: '#E0E0DC', hatch: 'brick',       edge: '#999988', label: 'Limestone' },
+  SH:   { color: '#7A7560', hatch: 'horiz-dense', edge: '#3D3A30', label: 'Shale' },
+  // Neutral fallback for any code we don't recognise
+  DEFAULT: { color: '#DCDCDC', hatch: 'none', edge: '#888888', label: 'Unclassified' },
 };
 
 function _svgPatternDefs() {
@@ -48,6 +62,17 @@ function _svgPatternDefs() {
     cross:        `<line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="0.8"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="0.8"/>`,
     'cross-dense':`<line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1"/>`,
     plus:         `<line x1="5" y1="0" x2="5" y2="10" stroke="currentColor" stroke-width="0.8"/><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="0.8"/>`,
+    // Brick — masonry pattern for rock / bedrock
+    brick:        `<line x1="0" y1="0" x2="10" y2="0" stroke="currentColor" stroke-width="0.6"/><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="0.6"/><line x1="0" y1="10" x2="10" y2="10" stroke="currentColor" stroke-width="0.6"/><line x1="5" y1="0" x2="5" y2="5" stroke="currentColor" stroke-width="0.5"/><line x1="0" y1="5" x2="0" y2="10" stroke="currentColor" stroke-width="0.5"/>`,
+    'brick-cross':`<line x1="0" y1="0" x2="10" y2="0" stroke="currentColor" stroke-width="0.5"/><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="0.5"/><line x1="5" y1="0" x2="5" y2="5" stroke="currentColor" stroke-width="0.5"/><line x1="0" y1="5" x2="0" y2="10" stroke="currentColor" stroke-width="0.5"/><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="0.4"/>`,
+    // Triangle — angular crushed stone
+    triangle:     `<path d="M0,10 L5,0 L10,10 Z" fill="none" stroke="currentColor" stroke-width="0.6"/>`,
+    // Vee — chevrons for igneous / diabase
+    vee:          `<path d="M0,8 L5,2 L10,8" fill="none" stroke="currentColor" stroke-width="0.7"/>`,
+    // Solid — no hatch, just the fill color (asphalt)
+    solid:        ``,
+    // None — keep the pattern present but empty (for the DEFAULT neutral fallback)
+    none:         ``,
   };
 
   for (const [code, style] of Object.entries(USCS_PATTERNS)) {
@@ -60,8 +85,22 @@ function _svgPatternDefs() {
   return defs.join('\n');
 }
 
+/**
+ * Resolve a soil-classification code to its display style. Returns the style
+ * object PLUS a `key` field that callers use to build the SVG pattern URL
+ * (`url(#pat-${style.key})`) — important when the input code differs in case
+ * from the canonical key (e.g., XML has "topsoil", table has "TOPSOIL").
+ * Unknown codes fall through to a neutral grey DEFAULT instead of being
+ * mis-rendered as CL.
+ */
 function _getSoilStyle(uscsCode) {
-  return USCS_PATTERNS[uscsCode] || USCS_PATTERNS.CL;
+  if (!uscsCode) return { ...USCS_PATTERNS.DEFAULT, key: 'DEFAULT' };
+  // Exact match first (handles case-sensitive forms like "CL-ML")
+  if (USCS_PATTERNS[uscsCode]) return { ...USCS_PATTERNS[uscsCode], key: uscsCode };
+  // Case-insensitive fallback
+  const upper = String(uscsCode).trim().toUpperCase();
+  if (USCS_PATTERNS[upper]) return { ...USCS_PATTERNS[upper], key: upper };
+  return { ...USCS_PATTERNS.DEFAULT, key: 'DEFAULT' };
 }
 
 function _wrapText(text, maxChars) {
@@ -102,24 +141,52 @@ function createBoringLogSVG(opts) {
   const pxPerFt = 6;
   const bodyH = maxDepth * pxPerFt;
   const totalH = headerH + colHeaderH + bodyH + 40;
-  const W = 900;
   const bodyTop = headerH + colHeaderH;
 
-  // Column positions
-  const cols = {
-    depth:  { x: 0,   w: 50 },
-    thick:  { x: 50,  w: 50 },
-    desc:   { x: 100, w: 220 },
-    legend: { x: 320, w: 60 },
-    b1:     { x: 380, w: 40 },
-    b2:     { x: 420, w: 40 },
-    b3:     { x: 460, w: 40 },
-    nTotal: { x: 500, w: 50 },
-    nPlot:  { x: 550, w: 180 },
-    wc:     { x: 730, w: 55 },
-    ll:     { x: 785, w: 55 },
-    pl:     { x: 840, w: 60 },
-  };
+  // --- Detect which optional columns have data ---
+  const hasBlows = sptData.some(s => s.Blow_1 != null || s.Blow_2 != null || s.Blow_3 != null);
+  const wcRows = (labTests && labTests['Water Content']) || [];
+  const attRows = (labTests && labTests['Atterberg Limits']) || [];
+  const hasWc = wcRows.some(r => Object.entries(r).some(([k, v]) =>
+      k !== 'Borehole' && k !== 'Depth_ft' && typeof v === 'number'));
+  const _attHasKey = (att, needles) => Object.entries(att).some(([k, v]) => {
+    if (typeof v !== 'number') return false;
+    const kl = k.toLowerCase();
+    return needles.some(n => kl.includes(n));
+  });
+  const hasLL = attRows.some(r => _attHasKey(r, ['liquid', 'll']));
+  const hasPL = attRows.some(r => _attHasKey(r, ['plastic', 'pl']));
+
+  // Column spec: (name, baseWidth, present). Lithology is always present here
+  // because of the early-return above; depth/desc/nTotal/nPlot are always shown.
+  const colSpec = [
+    { name: 'depth',  width: 50,  present: true },
+    { name: 'thick',  width: 50,  present: true },
+    { name: 'desc',   width: 220, present: true },
+    { name: 'legend', width: 60,  present: true },
+    { name: 'b1',     width: 40,  present: hasBlows },
+    { name: 'b2',     width: 40,  present: hasBlows },
+    { name: 'b3',     width: 40,  present: hasBlows },
+    { name: 'nTotal', width: 50,  present: true },
+    { name: 'nPlot',  width: 180, present: true },
+    { name: 'wc',     width: 55,  present: hasWc },
+    { name: 'll',     width: 55,  present: hasLL },
+    { name: 'pl',     width: 60,  present: hasPL },
+  ];
+
+  // Redistribute width freed by absent columns: 70% to description, 30% to N-value plot
+  const freed = colSpec.filter(c => !c.present).reduce((s, c) => s + c.width, 0);
+  const bonus = { desc: freed * 0.7, nPlot: freed * 0.3 };
+
+  const cols = {};
+  let _cx = 0;
+  for (const c of colSpec) {
+    if (!c.present) continue;
+    const w = c.width + (bonus[c.name] || 0);
+    cols[c.name] = { x: _cx, w };
+    _cx += w;
+  }
+  const W = _cx;
 
   const maxN = Math.max(50, ...sptData.map(s => s.N_Value || 0));
   const nScale = cols.nPlot.w / maxN;
@@ -157,7 +224,7 @@ function createBoringLogSVG(opts) {
     { col: 'wc', text: 'WC%' },
     { col: 'll', text: 'LL%' },
     { col: 'pl', text: 'PL%' },
-  ];
+  ].filter(h => cols[h.col]);
 
   svg += `<rect x="0" y="${headerH}" width="${W}" height="${colHeaderH}" fill="#4680ff" stroke="#dee2e6"/>`;
   for (const h of headers) {
@@ -193,7 +260,7 @@ function createBoringLogSVG(opts) {
 
     // Legend column: fill + pattern
     svg += `<rect x="${lc.x}" y="${y1}" width="${lc.w}" height="${h}" fill="${style.color}" opacity="0.6"/>`;
-    svg += `<rect x="${lc.x}" y="${y1}" width="${lc.w}" height="${h}" fill="url(#pat-${layer.USCS_Code || 'CL'})" opacity="0.8"/>`;
+    svg += `<rect x="${lc.x}" y="${y1}" width="${lc.w}" height="${h}" fill="url(#pat-${style.key})" opacity="0.8"/>`;
     svg += `<rect x="${lc.x}" y="${y1}" width="${lc.w}" height="${h}" fill="none" stroke="${style.edge}" stroke-width="0.5"/>`;
 
     // USCS code label
@@ -217,10 +284,10 @@ function createBoringLogSVG(opts) {
   for (const s of sptData) {
     const y = bodyTop + s.Top_Depth_ft * pxPerFt;
 
-    // Blow counts
-    if (s.Blow_1 != null) svg += `<text x="${cols.b1.x + cols.b1.w/2}" y="${y + 4}" text-anchor="middle" font-size="9">${s.Blow_1}</text>`;
-    if (s.Blow_2 != null) svg += `<text x="${cols.b2.x + cols.b2.w/2}" y="${y + 4}" text-anchor="middle" font-size="9">${s.Blow_2}</text>`;
-    if (s.Blow_3 != null) svg += `<text x="${cols.b3.x + cols.b3.w/2}" y="${y + 4}" text-anchor="middle" font-size="9">${s.Blow_3}</text>`;
+    // Blow counts (only if the columns exist)
+    if (cols.b1 && s.Blow_1 != null) svg += `<text x="${cols.b1.x + cols.b1.w/2}" y="${y + 4}" text-anchor="middle" font-size="9">${s.Blow_1}</text>`;
+    if (cols.b2 && s.Blow_2 != null) svg += `<text x="${cols.b2.x + cols.b2.w/2}" y="${y + 4}" text-anchor="middle" font-size="9">${s.Blow_2}</text>`;
+    if (cols.b3 && s.Blow_3 != null) svg += `<text x="${cols.b3.x + cols.b3.w/2}" y="${y + 4}" text-anchor="middle" font-size="9">${s.Blow_3}</text>`;
 
     // N-value text
     if (s.N_Value != null) {
@@ -258,15 +325,16 @@ function createBoringLogSVG(opts) {
     const wcData = labTests['Water Content'] || [];
     const attData = labTests['Atterberg Limits'] || [];
 
-    for (const wc of wcData) {
-      if (wc.Depth_ft == null) continue;
-      const y = bodyTop + wc.Depth_ft * pxPerFt;
-      // Find water content value — look for key containing 'water' or 'moisture' or 'wc'
-      for (const [k, v] of Object.entries(wc)) {
-        if (k === 'Borehole' || k === 'Depth_ft') continue;
-        if (typeof v === 'number') {
-          svg += `<text x="${cols.wc.x + cols.wc.w/2}" y="${y + 4}" text-anchor="middle" font-size="8">${v.toFixed(1)}</text>`;
-          break;
+    if (cols.wc) {
+      for (const wc of wcData) {
+        if (wc.Depth_ft == null) continue;
+        const y = bodyTop + wc.Depth_ft * pxPerFt;
+        for (const [k, v] of Object.entries(wc)) {
+          if (k === 'Borehole' || k === 'Depth_ft') continue;
+          if (typeof v === 'number') {
+            svg += `<text x="${cols.wc.x + cols.wc.w/2}" y="${y + 4}" text-anchor="middle" font-size="8">${v.toFixed(1)}</text>`;
+            break;
+          }
         }
       }
     }
@@ -277,9 +345,9 @@ function createBoringLogSVG(opts) {
       for (const [k, v] of Object.entries(att)) {
         if (typeof v !== 'number') continue;
         const kl = k.toLowerCase();
-        if (kl.includes('liquid') || kl.includes('ll')) {
+        if (cols.ll && (kl.includes('liquid') || kl.includes('ll'))) {
           svg += `<text x="${cols.ll.x + cols.ll.w/2}" y="${y + 4}" text-anchor="middle" font-size="8">${v.toFixed(1)}</text>`;
-        } else if (kl.includes('plastic') || kl.includes('pl')) {
+        } else if (cols.pl && (kl.includes('plastic') || kl.includes('pl'))) {
           svg += `<text x="${cols.pl.x + cols.pl.w/2}" y="${y + 4}" text-anchor="middle" font-size="8">${v.toFixed(1)}</text>`;
         }
       }

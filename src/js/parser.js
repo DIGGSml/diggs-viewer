@@ -16,9 +16,12 @@ class DIGGSParser {
     this.xlink_ns = 'http://www.w3.org/1999/xlink';
     this.glr_ns = 'http://www.opengis.net/gml/3.3/lr';
 
-    // Build sounding lookup
+    // Build sounding & borehole lookups so cross-referencing extractors
+    // (SPT, lithology, lab tests) can resolve xlink hrefs to canonical names.
     this.soundingsById = {};
     this._buildSoundingLookup();
+    this.boreholesById = {};
+    this._buildBoreholeLookup();
   }
 
   // --- Helpers ---
@@ -83,6 +86,38 @@ class DIGGSParser {
       const name = (nameEl && nameEl.textContent) ? nameEl.textContent.trim() : gmlId;
       this.soundingsById[gmlId] = { element: sounding, name, id: gmlId };
     }
+  }
+
+  _buildBoreholeLookup() {
+    for (const bh of this._findAll(this.root, 'Borehole')) {
+      const gmlId = this._getGmlId(bh);
+      if (!gmlId) continue;
+      const nameEl = this._find(bh, 'name');
+      const name = (nameEl && nameEl.textContent) ? nameEl.textContent.trim() : gmlId;
+      this.boreholesById[gmlId] = name;
+    }
+  }
+
+  /**
+   * Resolve an xlink:href that points to a Borehole into the canonical
+   * borehole Name (`<name>` element text). The DIGGS spec lets authors pick
+   * gml:id values freely (`Location_BH-1`, `BH-1`, `bh_loc_001`, etc.), so
+   * lithology / SPT / lab records reference boreholes by gml:id while the
+   * `<name>` element is what users actually identify the borehole as.
+   * Returns the Name when the href resolves; falls back to the stripped href
+   * so unmatched references still produce a stable string key (just not
+   * necessarily a human-readable one).
+   */
+  _resolveBoreholeRef(href) {
+    if (!href) return 'Unknown';
+    const cleaned = href.replace(/^#/, '');
+    if (this.boreholesById[cleaned]) return this.boreholesById[cleaned];
+    // Some authors prefix gml:ids with `Location_` and reference the bare
+    // form, or vice-versa — try both directions before giving up.
+    const stripped = cleaned.replace(/^Location_/, '');
+    if (this.boreholesById[stripped]) return this.boreholesById[stripped];
+    if (this.boreholesById[`Location_${cleaned}`]) return this.boreholesById[`Location_${cleaned}`];
+    return stripped;
   }
 
   // --- Extract boreholes ---
@@ -163,8 +198,7 @@ class DIGGSParser {
       let borehole = 'Unknown';
       const sfRef = this._find(test, 'samplingFeatureRef');
       if (sfRef) {
-        const href = this._getXlinkHref(sfRef);
-        if (href) borehole = href.replace('#', '').replace('Location_', '');
+        borehole = this._resolveBoreholeRef(this._getXlinkHref(sfRef));
       }
 
       // Depths from LinearExtent > posList
@@ -355,8 +389,7 @@ class DIGGSParser {
       let borehole = 'Unknown';
       const sfRef = this._find(ls, 'samplingFeatureRef');
       if (sfRef) {
-        const href = this._getXlinkHref(sfRef);
-        if (href) borehole = href.replace('#', '').replace('Location_', '');
+        borehole = this._resolveBoreholeRef(this._getXlinkHref(sfRef));
       }
 
       for (const obs of this._findAll(ls, 'LithologyObservation')) {
@@ -372,7 +405,15 @@ class DIGGSParser {
         }
 
         const description = this._getText(obs, 'lithDescription') || '';
-        const legendCode = this._getText(obs, 'legendCode') || '';
+        // USCS / soil-classification code: prefer the schema-canonical fields.
+        // - classificationCode: USCS group name or symbol (codeSpace="USCS"). Schema-required if no lithDescription.
+        // - classificationSymbol: group symbol specifically (e.g. "ML", "SC"). Common in ASTM D2488 exports.
+        // - legendCode: graphic-pattern hint, NOT a classification field — but some non-conformant exporters
+        //   (older state-DOT pipelines) put the USCS code here, so it's our last structured fallback.
+        const uscsCode = this._getText(obs, 'classificationCode')
+                      || this._getText(obs, 'classificationSymbol')
+                      || this._getText(obs, 'legendCode')
+                      || '';
         const unitName = this._getText(obs, 'unitName') || '';
 
         if (topDepth !== null) {
@@ -380,7 +421,7 @@ class DIGGSParser {
             Borehole: borehole,
             Top_Depth_ft: topDepth,
             Bottom_Depth_ft: bottomDepth,
-            USCS_Code: legendCode,
+            USCS_Code: uscsCode,
             Unit_Name: unitName,
             Description: description,
           });
@@ -465,7 +506,78 @@ class DIGGSParser {
       axial_strain: 'Axial_Strain',
     };
 
+    // Map gml:name (test identifier) to canonical test type. Used when a Test
+    // has no <procedure> element — common in Geosetta / VDOT exports where the
+    // test identifier lives in <gml:name> instead of a typed procedure element.
+    const gmlNameToTestType = {
+      water_content_natural: 'Water Content',
+      water_content: 'Water Content',
+      moisture_content: 'Moisture Content',
+      liquid_limit: 'Atterberg Limits',
+      plastic_limit: 'Atterberg Limits',
+      plasticity_index: 'Atterberg Limits',
+      atterberg_limits: 'Atterberg Limits',
+      dry_density: 'Lab Density',
+      wet_density: 'Lab Density',
+      bulk_density: 'Lab Density',
+      percent_fines: 'Percent Fines',
+      fines_content: 'Percent Fines',
+      specific_gravity: 'Specific Gravity',
+      organic_content: 'Organic Content',
+      ph: 'pH',
+      unconfined_compression: 'Unconfined Compression',
+      undrained_shear_strength: 'Triaxial',
+      pocket_penetrometer: 'Pocket Penetrometer',
+    };
+
     const labTests = {};
+
+    // Borehole-resolution fallbacks for lab tests that don't carry a
+    // samplingFeatureRef directly. Two-step strategy:
+    //
+    //   1. sample → borehole lookup, built from <SamplingActivity> elements
+    //      (and any standalone <Sample>/<SoilSample> elements with a
+    //      samplingFeatureRef of their own). Lab tests reference samples by
+    //      gml:id via <sampleRef>, and the SamplingActivity's
+    //      samplingFeatureRef points at the borehole.
+    //
+    //   2. Single-borehole fallback. Geosetta and several DOT exporters write
+    //      lab tests with sampleRef hrefs that point to Sample IDs that don't
+    //      exist as elements anywhere in the document — the chain is dangling.
+    //      In a single-borehole file we can still attribute the tests to the
+    //      one borehole that's there. For multi-borehole files with dangling
+    //      sample chains we leave the borehole as 'Unknown' (better visible
+    //      and unjoined than silently dropped).
+    const sampleToBorehole = {};
+    const _registerSampleIds = (parent, bhName) => {
+      const w = this.doc.createTreeWalker(parent, NodeFilter.SHOW_ELEMENT, null);
+      let n;
+      while ((n = w.nextNode())) {
+        const id = this._getGmlId(n);
+        if (id && !sampleToBorehole[id]) sampleToBorehole[id] = bhName;
+      }
+    };
+    for (const sa of this._findAll(this.root, 'SamplingActivity')) {
+      const sfRef = this._find(sa, 'samplingFeatureRef');
+      if (!sfRef) continue;
+      const bh = this._resolveBoreholeRef(this._getXlinkHref(sfRef));
+      if (bh && bh !== 'Unknown') _registerSampleIds(sa, bh);
+    }
+    for (const tag of ['Sample', 'SoilSample', 'RockSample']) {
+      for (const s of this._findAll(this.root, tag)) {
+        const id = this._getGmlId(s);
+        if (!id || sampleToBorehole[id]) continue;
+        const sfRef = this._find(s, 'samplingFeatureRef');
+        if (sfRef) {
+          const bh = this._resolveBoreholeRef(this._getXlinkHref(sfRef));
+          if (bh && bh !== 'Unknown') sampleToBorehole[id] = bh;
+        }
+      }
+    }
+    const allBoreholes = this._findAll(this.root, 'Borehole');
+    const onlyBoreholeName = allBoreholes.length === 1
+      ? this._resolveBoreholeRef('#' + this._getGmlId(allBoreholes[0]))
+      : null;
 
     for (const test of this._findAll(this.root, 'Test')) {
       let testType = null;
@@ -491,7 +603,8 @@ class DIGGSParser {
       }
       if (isSkipped) continue;
 
-      // If no known type matched, try to derive a label from the procedure element
+      // If no known procedure-element type matched, try to derive a label from
+      // the procedure element itself.
       if (!testType) {
         const proc = this._find(test, 'procedure');
         if (proc && proc.children.length > 0) {
@@ -502,15 +615,43 @@ class DIGGSParser {
             procedureElem = proc.children[0];
           }
         }
-        if (!testType) continue;
       }
 
-      // Borehole reference
+      // Final fallback: read the test's <gml:name> text. Geosetta / VDOT
+      // exports identify lab tests this way (e.g. <gml:name>liquid_limit</gml:name>)
+      // with no <procedure> element at all.
+      if (!testType) {
+        const directNameEls = this._findChildren(test, 'name');
+        const gmlName = directNameEls.length && directNameEls[0].textContent
+          ? directNameEls[0].textContent.trim() : '';
+        if (gmlName) {
+          const lookup = gmlName.toLowerCase().replace(/\s+/g, '_');
+          if (gmlNameToTestType[lookup]) {
+            testType = gmlNameToTestType[lookup];
+          } else {
+            // Unknown identifier — present it as a human-readable label.
+            testType = gmlName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          }
+        }
+      }
+      if (!testType) continue;
+
+      // Borehole reference — try samplingFeatureRef, then sampleRef → sample
+      // lookup, then single-borehole fallback for files with broken chains.
       let borehole = 'Unknown';
       const sfRef = this._find(test, 'samplingFeatureRef');
       if (sfRef) {
-        const href = this._getXlinkHref(sfRef);
-        if (href) borehole = href.replace('#', '').replace('Location_', '');
+        borehole = this._resolveBoreholeRef(this._getXlinkHref(sfRef));
+      }
+      if (!borehole || borehole === 'Unknown') {
+        const sampRef = this._find(test, 'sampleRef');
+        if (sampRef) {
+          const sampleId = this._getXlinkHref(sampRef).replace(/^#/, '');
+          if (sampleToBorehole[sampleId]) borehole = sampleToBorehole[sampleId];
+        }
+      }
+      if ((!borehole || borehole === 'Unknown') && onlyBoreholeName) {
+        borehole = onlyBoreholeName;
       }
 
       // Find TestResult
@@ -582,6 +723,20 @@ class DIGGSParser {
         }
       }
     }
+
+    // Some exporters split Atterberg results across three separate Tests at
+    // the same depth (one each for LL, PL, PI). Merge them so the lab table
+    // shows one row per (borehole, depth) instead of three sparse rows.
+    if (labTests['Atterberg Limits']) {
+      const merged = new Map();
+      for (const r of labTests['Atterberg Limits']) {
+        const key = `${r.Borehole}__${r.Depth_ft}`;
+        if (!merged.has(key)) merged.set(key, { ...r });
+        else Object.assign(merged.get(key), r);
+      }
+      labTests['Atterberg Limits'] = [...merged.values()];
+    }
+
     return labTests;
   }
 

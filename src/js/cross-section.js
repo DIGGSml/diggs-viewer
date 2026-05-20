@@ -192,7 +192,7 @@ function createCrossSectionSVG(opts) {
         `${x1},${yOf(b.zBot1)}`,
       ].join(' ');
       svg += `<polygon points="${points}" fill="${style.color}" opacity="0.5"/>`;
-      svg += `<polygon points="${points}" fill="url(#pat-${b.uscs})" opacity="0.4"/>`;
+      svg += `<polygon points="${points}" fill="url(#pat-${style.key})" opacity="0.4"/>`;
       svg += `<polygon points="${points}" fill="none" stroke="${style.edge}" stroke-width="0.3"/>`;
     }
   }
@@ -210,7 +210,7 @@ function createCrossSectionSVG(opts) {
       if (h <= 0) continue;
       const style = _getSoilStyle(l.uscs);
       svg += `<rect x="${xL}" y="${yT}" width="${w}" height="${h}" fill="${style.color}" opacity="0.8"/>`;
-      svg += `<rect x="${xL}" y="${yT}" width="${w}" height="${h}" fill="url(#pat-${l.uscs})" opacity="0.7"/>`;
+      svg += `<rect x="${xL}" y="${yT}" width="${w}" height="${h}" fill="url(#pat-${style.key})" opacity="0.7"/>`;
     }
 
     // Column outline

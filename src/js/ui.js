@@ -21,6 +21,9 @@ const AppState = {
   currentXml: null,
   currentFileName: null,
   hasEmbeddedData: false,
+  leafletMap: null,        // Leaflet instance — kept alive across tab switches
+  crossSectionMap: null,   // Leaflet inset on the cross-section tab
+  crossSectionLayers: null,
 };
 
 // --- Unit helpers ---
@@ -222,6 +225,14 @@ function switchTab(tabId) {
   if (tabId === 'spt' || tabId === 'cpt') {
     setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
   }
+  // Leaflet doesn't auto-detect that its container was display:none and is now
+  // visible — tiles render gray / map measures wrong without invalidateSize.
+  if (tabId === 'map' && AppState.leafletMap) {
+    setTimeout(() => AppState.leafletMap.invalidateSize(), 50);
+  }
+  if (tabId === 'cross-section' && AppState.crossSectionMap) {
+    setTimeout(() => AppState.crossSectionMap.invalidateSize(), 50);
+  }
 }
 
 // --- Overview tab ---
@@ -373,7 +384,15 @@ function renderMap() {
     const mapDiv = document.getElementById('map-container');
     mapDiv.innerHTML = '';
 
+    // If a previous map instance is still around (e.g. user loaded a new file),
+    // tear it down so it doesn't leak listeners and tile requests.
+    if (AppState.leafletMap) {
+      try { AppState.leafletMap.remove(); } catch (e) { /* already detached */ }
+      AppState.leafletMap = null;
+    }
+
     const map = L.map(mapDiv);
+    AppState.leafletMap = map;
 
     const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors',
@@ -653,6 +672,13 @@ function renderCrossSection() {
     return;
   }
 
+  // Tear down any prior section-path map — its DOM is about to be replaced.
+  if (AppState.crossSectionMap) {
+    try { AppState.crossSectionMap.remove(); } catch (e) { /* already detached */ }
+    AppState.crossSectionMap = null;
+    AppState.crossSectionLayers = null;
+  }
+
   let html = '<div class="controls">';
   html += '<label>Boreholes (select 2+):</label>';
   html += '<select id="xs-bh-select" multiple style="min-width: 200px; height: 100px;">';
@@ -663,6 +689,10 @@ function renderCrossSection() {
   html += '<button class="download-btn" onclick="updateCrossSection()" style="margin: 0;">Update</button>';
   html += '<button class="download-btn" onclick="printCrossSection()" style="margin: 0;">Print / Save PDF</button>';
   html += '</div>';
+  // Section path inset map — shows the polyline through selected boreholes
+  // in selection order, so users can see the actual path the section follows.
+  html += '<div id="xs-map-note" style="font-size:12px;color:#666;margin-top:8px;"></div>';
+  html += '<div id="xs-map-container" style="height:280px;width:100%;margin:8px 0 16px;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;"></div>';
   html += '<div id="cross-section-svg"></div>';
 
   // USCS legend
@@ -689,6 +719,7 @@ function updateCrossSection() {
 
   if (selected.length < 2) {
     document.getElementById('cross-section-svg').innerHTML = '<p class="no-data">Select at least 2 boreholes</p>';
+    _updateCrossSectionMap([]);
     return;
   }
 
@@ -699,6 +730,98 @@ function updateCrossSection() {
     waterTable: AppState.waterTable,
   });
   document.getElementById('cross-section-svg').innerHTML = svg;
+  _updateCrossSectionMap(selected);
+}
+
+/**
+ * Render / update the inset Leaflet map showing the section path.
+ * Selected boreholes are drawn as numbered markers; a polyline connects them
+ * in selection order so the actual section path is explicit (the SVG's
+ * X-axis is the polyline length, not a straight-line distance).
+ */
+function _updateCrossSectionMap(selectedNames) {
+  const mapDiv = document.getElementById('xs-map-container');
+  const noteDiv = document.getElementById('xs-map-note');
+  if (!mapDiv) return;
+
+  if (!navigator.onLine) {
+    mapDiv.innerHTML = '<div class="map-offline-msg" style="padding:24px;text-align:center;color:#666;">Section-path preview requires an internet connection.</div>';
+    if (noteDiv) noteDiv.textContent = '';
+    return;
+  }
+
+  const points = selectedNames
+    .map((name, i) => {
+      const bh = AppState.boreholes.find(b => b.Name === name);
+      if (!bh || bh.Latitude == null || bh.Longitude == null) return null;
+      return { name, lat: bh.Latitude, lon: bh.Longitude, order: i + 1 };
+    })
+    .filter(p => p);
+
+  const missing = selectedNames.length - points.length;
+  if (noteDiv) {
+    noteDiv.textContent = missing > 0
+      ? `Note: ${missing} selected borehole${missing > 1 ? 's' : ''} ha${missing > 1 ? 've' : 's'} no coordinates — shown on the section at synthetic 100 m spacing but not on the map.`
+      : '';
+  }
+
+  if (points.length < 2) {
+    mapDiv.innerHTML = '<div class="map-offline-msg" style="padding:24px;text-align:center;color:#666;">Select 2+ boreholes with coordinates to preview the section path.</div>';
+    if (AppState.crossSectionMap) {
+      try { AppState.crossSectionMap.remove(); } catch (e) { /* already detached */ }
+      AppState.crossSectionMap = null;
+      AppState.crossSectionLayers = null;
+    }
+    return;
+  }
+
+  loadLeaflet().then(() => {
+    // Build (or reuse) the map. The "still in DOM" check covers the case where
+    // the cross-section panel was re-rendered (e.g. new XML loaded) and the
+    // old map's container was clobbered by innerHTML replacement.
+    const stale = AppState.crossSectionMap &&
+                  !mapDiv.contains(AppState.crossSectionMap.getContainer());
+    if (stale) {
+      try { AppState.crossSectionMap.remove(); } catch (e) { /* already detached */ }
+      AppState.crossSectionMap = null;
+      AppState.crossSectionLayers = null;
+    }
+
+    if (!AppState.crossSectionMap) {
+      mapDiv.innerHTML = '';  // clear any prior placeholder text
+      const map = L.map(mapDiv, { scrollWheelZoom: false });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap',
+        maxZoom: 19,
+      }).addTo(map);
+      AppState.crossSectionMap = map;
+      AppState.crossSectionLayers = L.layerGroup().addTo(map);
+    }
+
+    AppState.crossSectionLayers.clearLayers();
+
+    // Polyline along the section path
+    const latlngs = points.map(p => [p.lat, p.lon]);
+    L.polyline(latlngs, { color: '#3498db', weight: 3, opacity: 0.9 })
+      .addTo(AppState.crossSectionLayers);
+
+    // Numbered markers (selection order = section order)
+    for (const p of points) {
+      const icon = L.divIcon({
+        className: 'xs-section-marker',
+        html: `<div style="background:#fff;border:2px solid #e74c3c;border-radius:50%;width:24px;height:24px;font-size:11px;font-weight:bold;color:#e74c3c;text-align:center;line-height:20px;box-shadow:0 1px 3px rgba(0,0,0,0.3);">${p.order}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+      });
+      L.marker([p.lat, p.lon], { icon })
+        .bindPopup(`<strong>${escapeHtml(p.name)}</strong><br>Section position: ${p.order} of ${points.length}`)
+        .addTo(AppState.crossSectionLayers);
+    }
+
+    AppState.crossSectionMap.fitBounds(L.latLngBounds(latlngs).pad(0.25));
+  }).catch(err => {
+    mapDiv.innerHTML = `<div class="map-offline-msg" style="padding:24px;text-align:center;color:#666;">Section-path preview unavailable: ${escapeHtml(err.message)}</div>`;
+  });
 }
 
 function printCrossSection() {
