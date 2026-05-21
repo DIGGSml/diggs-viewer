@@ -9,19 +9,27 @@ Usage:
     python build.py                          # Viewer with drag-and-drop
     python build.py --xml path/to/file.xml   # Viewer with embedded XML
     python build.py --xml file.xml --logo logo.png -o out.html
+    python build.py --xml file.xml --logo logo.png --link https://acme.com
     python build.py --no-logo                # Strip logo entirely
 """
 
 import argparse
 import base64
+import html as html_lib
 import io
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 from PIL import Image
 
 SRC = Path(__file__).parent / "src"
-DEFAULT_LOGO = Path(__file__).parent / "g-i-logo_32.png"
+
+# Default branding: the official DIGGS logo, linking to the DIGGS project page
+# at ASCE's Geo-Institute. Shown on every viewer built without a custom logo.
+DEFAULT_LOGO = Path(__file__).parent / "diggs-default-logo.jpg"
+DEFAULT_LOGO_LINK = "https://www.geoinstitute.org/special-projects/diggs"
+
 PLOTLY_URL = "https://cdn.plot.ly/plotly-basic-2.35.2.min.js"
 
 JS_FILES = [
@@ -102,19 +110,86 @@ def validate_and_encode_logo(raw_bytes: bytes, filename: str) -> str:
     return f'<img class="app-logo" src="data:image/png;base64,{b64}" alt="">'
 
 
+# --- Logo link sanitization ---
+#
+# Recipients of the wrapped viewer open it offline. Any link we embed runs in
+# their browser, so the URL has to be locked down at *generation* time. The
+# moment we add user-provided links to the viewer, we become responsible for
+# whatever ends up there. These guards are non-negotiable.
+
+MAX_LINK_LENGTH = 2048  # URL length cap (RFC-ish; browsers vary)
+
+
+def sanitize_logo_link(link: str) -> str:
+    """Validate a logo hyperlink for safe embedding.
+
+    Enforces:
+      - https:// scheme only (blocks javascript:, data:, vbscript:, file:, mailto:)
+      - parseable URL with a hostname
+      - length cap
+    Returns the URL unchanged on success; raises ValueError on any failure.
+    HTML-escaping happens at the embedding point, not here.
+    """
+    if not isinstance(link, str):
+        raise ValueError("link must be a string")
+    link = link.strip()
+    if not link:
+        raise ValueError("link is empty")
+    if len(link) > MAX_LINK_LENGTH:
+        raise ValueError(f"link too long: {len(link)} chars (max {MAX_LINK_LENGTH})")
+    parsed = urlparse(link)
+    if parsed.scheme != "https":
+        raise ValueError(
+            f"link scheme '{parsed.scheme}' not allowed — only https:// is permitted"
+        )
+    if not parsed.netloc:
+        raise ValueError("link is missing a hostname")
+    return link
+
+
+def wrap_logo_with_link(img_html: str, link: str) -> str:
+    """Wrap an <img> in a hyperlink, escaping the URL into the href attribute.
+
+    The link MUST have already passed sanitize_logo_link() — callers should
+    not skip that step.
+    """
+    safe_href = html_lib.escape(link, quote=True)
+    return (
+        f'<a class="app-logo-link" href="{safe_href}" '
+        f'target="_blank" rel="noopener noreferrer">{img_html}</a>'
+    )
+
+
+def default_logo_html() -> str:
+    """Return the bundled DIGGS logo wrapped in a link to the DIGGS project page.
+
+    Empty string if the default logo file is missing — the viewer header falls
+    back to the text "DIGGS Viewer" with no image.
+    """
+    if not DEFAULT_LOGO.exists():
+        return ""
+    raw = DEFAULT_LOGO.read_bytes()
+    img_html = validate_and_encode_logo(raw, DEFAULT_LOGO.name)
+    return wrap_logo_with_link(img_html, DEFAULT_LOGO_LINK)
+
+
 def build(
     xml_path: Path | None = None,
     output_path: Path | None = None,
     logo_path: Path | None = None,
     no_logo: bool = False,
+    link: str | None = None,
 ) -> Path:
     """Build a self-contained HTML viewer.
 
     Args:
         xml_path: DIGGS XML to embed. None for drag-and-drop viewer.
         output_path: Where to write the HTML. Auto-named if None.
-        logo_path: Custom logo image. None uses default g-i-logo_32.png.
+        logo_path: Custom logo image. None falls back to the bundled DIGGS logo.
         no_logo: If True, build with no logo at all.
+        link: Optional hyperlink to wrap around a custom logo. Ignored unless
+              logo_path is set. Must be https://. If logo_path is None, the
+              bundled DIGGS logo always links to the official DIGGS project page.
     """
     template = (SRC / "index.html").read_text(encoding="utf-8")
 
@@ -144,10 +219,15 @@ def build(
         pass  # Leave empty
     elif logo_path:
         raw = logo_path.read_bytes()
-        logo_html = validate_and_encode_logo(raw, logo_path.name)
-    elif DEFAULT_LOGO.exists():
-        raw = DEFAULT_LOGO.read_bytes()
-        logo_html = validate_and_encode_logo(raw, DEFAULT_LOGO.name)
+        img_html = validate_and_encode_logo(raw, logo_path.name)
+        if link:
+            sanitized = sanitize_logo_link(link)
+            logo_html = wrap_logo_with_link(img_html, sanitized)
+        else:
+            logo_html = img_html
+    else:
+        # Default: bundled DIGGS logo, linked to the DIGGS project page.
+        logo_html = default_logo_html()
 
     template = template.replace("<!-- DIGGS_LOGO -->", logo_html)
 
@@ -209,6 +289,11 @@ def main():
     parser.add_argument(
         "--no-logo", action="store_true", help="Build with no logo"
     )
+    parser.add_argument(
+        "--link",
+        help="Optional https:// URL to wrap around a custom logo. "
+             "Requires --logo. Ignored otherwise.",
+    )
     args = parser.parse_args()
 
     if args.xml and not args.xml.exists():
@@ -220,7 +305,10 @@ def main():
     if args.logo and args.no_logo:
         parser.error("Cannot use both --logo and --no-logo")
 
-    build(args.xml, args.output, args.logo, args.no_logo)
+    if args.link and not args.logo:
+        parser.error("--link requires --logo (custom link only applies to a custom logo)")
+
+    build(args.xml, args.output, args.logo, args.no_logo, args.link)
 
 
 if __name__ == "__main__":
