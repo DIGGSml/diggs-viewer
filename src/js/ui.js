@@ -8,6 +8,7 @@ const AppState = {
   soundings: [],
   sptData: [],
   cptData: [],
+  mwdData: [],
   lithology: [],
   waterTable: [],
   labTests: {},
@@ -142,6 +143,7 @@ function parseAndRender(xmlString) {
     AppState.otherFeatures = AppState.parser.extractOtherSamplingFeatures();
     AppState.sptData = AppState.parser.extractSPTData();
     AppState.cptData = AppState.parser.extractCPTData();
+    AppState.mwdData = AppState.parser.extractMWDData();
     AppState.lithology = AppState.parser.extractLithology();
     AppState.waterTable = AppState.parser.extractWaterTable();
     AppState.labTests = AppState.parser.extractLabTests();
@@ -185,6 +187,7 @@ function updateTabAvailability() {
     map: hasCoords && navigator.onLine,
     spt: AppState.sptData.length > 0,
     cpt: AppState.cptData.length > 0,
+    mwd: AppState.mwdData.length > 0,
     'boring-log': AppState.lithology.length > 0,
     'cross-section': AppState.lithology.length > 0 && _crossSectionBoreholes().length >= 2,
     'lab-tests': Object.keys(AppState.labTests).length > 0,
@@ -213,6 +216,7 @@ function switchTab(tabId) {
       case 'map': renderMap(); break;
       case 'spt': renderSPT(); break;
       case 'cpt': renderCPT(); break;
+      case 'mwd': renderMWD(); break;
       case 'boring-log': renderBoringLog(); break;
       case 'cross-section': renderCrossSection(); break;
       case 'lab-tests': renderLabTests(); break;
@@ -253,7 +257,7 @@ function renderOverview() {
 
   // Build summary metrics dynamically from what exists
   const metrics = [];
-  const colors = ['#4680ff', '#ff6b35', '#28a745', '#e83e8c', '#6f42c1', '#fd7e14', '#17a2b8', '#20c997'];
+  const colors = ['#1c3d28', '#ff6b35', '#28a745', '#e83e8c', '#6f42c1', '#fd7e14', '#17a2b8', '#20c997'];
   let ci = 0;
 
   // Sampling features
@@ -282,6 +286,10 @@ function renderOverview() {
   }
   if (AppState.cptData.length > 0) {
     metrics.push({ label: 'CPT Data Points', value: AppState.cptData.length, color: colors[ci++ % colors.length] });
+  }
+  if (AppState.mwdData.length > 0) {
+    const mwdPoints = AppState.mwdData.reduce((s, r) => s + r.depths.length, 0);
+    metrics.push({ label: 'MWD Data Points', value: mwdPoints, color: colors[ci++ % colors.length] });
   }
 
   // Other counts
@@ -326,19 +334,19 @@ function renderOverview() {
 
   // Borehole table
   if (AppState.boreholes.length > 0) {
-    html += createStyledTable(AppState.boreholes, 'Boreholes', '#4680ff');
+    html += createStyledTable(AppState.boreholes.map(({ ID, ...rest }) => rest), 'Boreholes', '#1c3d28');
     html += `<button class="download-btn" onclick="downloadCSV(AppState.boreholes, 'boreholes.csv')">Download Boreholes CSV</button>`;
   }
 
   // Soundings table
   if (AppState.soundings.length > 0) {
-    html += createStyledTable(AppState.soundings, 'CPT Soundings', '#ff6b35');
+    html += createStyledTable(AppState.soundings, 'CPT Soundings', '#2a5a3a');
     html += `<button class="download-btn" onclick="downloadCSV(AppState.soundings, 'soundings.csv')">Download Soundings CSV</button>`;
   }
 
   // Other sampling features table
   if (AppState.otherFeatures.length > 0) {
-    html += createStyledTable(AppState.otherFeatures, 'Other Sampling Features', '#6f42c1');
+    html += createStyledTable(AppState.otherFeatures, 'Other Sampling Features', '#1c3d28');
     html += `<button class="download-btn" onclick="downloadCSV(AppState.otherFeatures, 'sampling_features.csv')">Download CSV</button>`;
   }
 
@@ -402,8 +410,8 @@ function renderMap() {
       attribution: '&copy; Esri, Maxar, Earthstar Geographics',
       maxZoom: 19,
     });
-    street.addTo(map);
-    L.control.layers({ 'Street': street, 'Satellite': satellite }, null, { position: 'topright' }).addTo(map);
+    satellite.addTo(map);
+    L.control.layers({ 'Satellite': satellite, 'Street': street }, null, { position: 'topright' }).addTo(map);
 
     const markers = [];
 
@@ -509,8 +517,8 @@ function updateSPTView(borehole) {
   }
 
   document.getElementById('spt-metrics').innerHTML = createMetricRow([
-    { label: 'Tests', value: filtered.length, color: '#4680ff' },
-    { label: `Max Depth (${du()})`, value: maxD.toFixed(1), color: '#6f42c1' },
+    { label: 'Tests', value: filtered.length, color: '#1c3d28' },
+    { label: `Max Depth (${du()})`, value: maxD.toFixed(1), color: '#c8a84b' },
     { label: 'Min N-Value', value: nValues.length ? Math.min(...nValues) : '—', color: '#28a745' },
     { label: 'Max N-Value', value: nValues.length ? Math.max(...nValues) : '—', color: '#dc3545' },
     { label: 'Avg N-Value', value: nValues.length ? (nValues.reduce((a, b) => a + b, 0) / nValues.length).toFixed(1) : '—', color: '#fd7e14' },
@@ -521,7 +529,7 @@ function updateSPTView(borehole) {
   plotNValueProfile(filtered, 'spt-chart', borehole || null);
 
   // Table
-  document.getElementById('spt-table').innerHTML = createStyledTable(filtered, `SPT Data${borehole ? ' — ' + borehole : ''}`, '#4680ff');
+  document.getElementById('spt-table').innerHTML = createStyledTable(filtered, `SPT Data${borehole ? ' — ' + borehole : ''}`, '#1c3d28');
 }
 
 // --- CPT tab ---
@@ -562,8 +570,8 @@ function updateCPTView(soundingName) {
   const depths = filtered.map(d => d.Depth_ft);
 
   document.getElementById('cpt-metrics').innerHTML = createMetricRow([
-    { label: 'Data Points', value: filtered.length, color: '#4680ff' },
-    { label: `Max Depth (${du()})`, value: depths.length ? Math.max(...depths).toFixed(1) : '—', color: '#6f42c1' },
+    { label: 'Data Points', value: filtered.length, color: '#1c3d28' },
+    { label: `Max Depth (${du()})`, value: depths.length ? Math.max(...depths).toFixed(1) : '—', color: '#c8a84b' },
     { label: `Avg qc (${qcU()})`, value: qcVals.length ? (qcVals.reduce((a, b) => a + b, 0) / qcVals.length).toFixed(1) : '—', color: '#e74c3c' },
     { label: `Avg fs (${fsU()})`, value: fsVals.length ? (fsVals.reduce((a, b) => a + b, 0) / fsVals.length).toFixed(3) : '—', color: '#2ecc71' },
     { label: 'Avg Rf (%)', value: rfVals.length ? (rfVals.reduce((a, b) => a + b, 0) / rfVals.length).toFixed(2) : '—', color: '#f39c12' },
@@ -599,7 +607,83 @@ function updateCPTView(soundingName) {
     row['Rf (%)'] = d.Friction_Ratio_pct;
     return row;
   });
-  document.getElementById('cpt-table').innerHTML = createStyledTable(tableData, `CPT Data — ${soundingName}`, '#ff6b35', '400px');
+  document.getElementById('cpt-table').innerHTML = createStyledTable(tableData, `CPT Data — ${soundingName}`, '#2a5a3a', '400px');
+}
+
+// --- MWD tab ---
+//
+// Mirrors the CPT tab: borehole picker on top, summary metrics row,
+// then a multi-panel depth profile (one panel per recorded channel).
+// MWD logs carry their own units (m, bar, rpm, etc.) — don't pull from
+// AppState.units, since those track the file's SPT/CPT convention which
+// is usually feet.
+function renderMWD() {
+  const container = document.getElementById('tab-mwd');
+  const records = AppState.mwdData;
+
+  let html = '<div class="controls">';
+  html += '<label>MWD Log: <select id="mwd-record-select">';
+  for (const r of records) {
+    const label = `${r.Borehole}${r.MWD_ID && r.MWD_ID !== r.Borehole ? ` (${r.MWD_ID})` : ''}`;
+    html += `<option value="${escapeHtml(r.MWD_ID)}">${escapeHtml(label)}</option>`;
+  }
+  html += '</select></label>';
+  html += '</div>';
+
+  html += '<div id="mwd-metrics"></div>';
+  html += '<div class="chart-container" id="mwd-chart"></div>';
+  html += '<div id="mwd-table"></div>';
+
+  container.innerHTML = html;
+
+  const select = document.getElementById('mwd-record-select');
+  select.addEventListener('change', () => updateMWDView(select.value));
+  if (records.length > 0) updateMWDView(records[0].MWD_ID);
+}
+
+function updateMWDView(mwdId) {
+  const record = AppState.mwdData.find(r => r.MWD_ID === mwdId) || AppState.mwdData[0];
+  if (!record) return;
+
+  // Summary metrics.
+  const validDepths = record.depths.filter(d => d != null && !isNaN(d));
+  const maxDepth = validDepths.length ? Math.max(...validDepths) : null;
+  const depthLabel = record.depthUnit ? `Max Depth (${record.depthUnit})` : 'Max Depth';
+  const metrics = [
+    { label: 'Data Points', value: record.depths.length, color: '#1c3d28' },
+    { label: depthLabel, value: maxDepth != null ? maxDepth.toFixed(2) : '—', color: '#c8a84b' },
+    { label: 'Channels', value: record.channels.length, color: '#2ecc71' },
+  ];
+
+  // Channel-level summaries: average and max of non-null values. Skip channels
+  // that are entirely null or all-zero (e.g. flow rate on dry drilling).
+  for (const ch of record.channels) {
+    const vals = (record.data[ch.key] || []).filter(v => v != null && !isNaN(v));
+    if (vals.length === 0) continue;
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const label = `Avg ${ch.name}${ch.unit ? ` (${ch.unit})` : ''}`;
+    metrics.push({ label, value: avg.toFixed(2), color: '#e67e22' });
+  }
+  document.getElementById('mwd-metrics').innerHTML = createMetricRow(metrics);
+
+  // Depth-profile chart.
+  plotMWDProfile(record, 'mwd-chart');
+
+  // Show a small sample table — full table would be 5000+ rows. Take first 50
+  // points (typically the spudding sequence near surface, useful for QA).
+  const sampleN = Math.min(50, record.depths.length);
+  const tableData = [];
+  const depthHdr = record.depthUnit ? `Depth (${record.depthUnit})` : 'Depth';
+  for (let i = 0; i < sampleN; i++) {
+    const row = { '#': i + 1, [depthHdr]: record.depths[i] };
+    for (const ch of record.channels) {
+      const hdr = `${ch.name}${ch.unit ? ` (${ch.unit})` : ''}`;
+      row[hdr] = record.data[ch.key] ? record.data[ch.key][i] : null;
+    }
+    tableData.push(row);
+  }
+  const title = `MWD Sample — ${record.Borehole} (first ${sampleN} of ${record.depths.length} rows)`;
+  document.getElementById('mwd-table').innerHTML = createStyledTable(tableData, title, '#2a6b3f', '400px');
 }
 
 // --- Boring Log tab ---
@@ -848,7 +932,7 @@ function renderLabTests() {
   }
 
   // Test type summary cards
-  const colors = ['#4680ff', '#28a745', '#fd7e14', '#e83e8c', '#6f42c1', '#17a2b8'];
+  const colors = ['#1c3d28', '#28a745', '#fd7e14', '#e83e8c', '#6f42c1', '#17a2b8'];
   let html = createMetricRow(testTypes.map((t, i) => ({
     label: t, value: AppState.labTests[t].length + ' tests', color: colors[i % colors.length],
   })));
@@ -873,7 +957,7 @@ function renderLabTests() {
 
 function updateLabView(testType) {
   const data = AppState.labTests[testType] || [];
-  document.getElementById('lab-table').innerHTML = createStyledTable(data, testType, '#6f42c1');
+  document.getElementById('lab-table').innerHTML = createStyledTable(data, testType, '#2a5a3a');
   plotLabTestProfile(data, 'lab-chart', testType);
 }
 
@@ -935,7 +1019,7 @@ function recalcInterpretation() {
     'Su (kPa)': r.Su != null ? r.Su.toFixed(1) : '—',
   }));
 
-  let html = createStyledTable(tableData, `SPT Correlations — ${borehole}`, '#6f42c1');
+  let html = createStyledTable(tableData, `SPT Correlations — ${borehole}`, '#2a5a3a');
   html += `<button class="download-btn" onclick="downloadCSV(${JSON.stringify(tableData).replace(/"/g, '&quot;')}, 'spt_correlations.csv')">Download CSV</button>`;
 
   // Bearing capacity quick estimates
@@ -966,6 +1050,10 @@ function generateReport() {
   if (AppState.soundings.length > 0) metrics.push(['CPT Soundings', AppState.soundings.length]);
   if (AppState.sptData.length > 0) metrics.push(['SPT Tests', AppState.sptData.length]);
   if (AppState.cptData.length > 0) metrics.push(['CPT Data Points', AppState.cptData.length]);
+  if (AppState.mwdData.length > 0) {
+    const mwdPoints = AppState.mwdData.reduce((s, r) => s + r.depths.length, 0);
+    metrics.push(['MWD Data Points', mwdPoints]);
+  }
 
   const allDepths = [
     ...AppState.boreholes.map(b => b.Total_Depth || 0),

@@ -51,7 +51,7 @@ function plotNValueProfile(sptData, containerId, boreholeName) {
 
   const axStyle = getAxisStyle();
   const traces = [];
-  const colors = ['#4680ff', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6', '#17a2b8',
+  const colors = ['#1c3d28', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6', '#17a2b8',
                   '#e83e8c', '#6f42c1', '#fd7e14', '#20c997', '#343a40', '#6610f2'];
 
   if (boreholeName) {
@@ -63,8 +63,8 @@ function plotNValueProfile(sptData, containerId, boreholeName) {
       mode: 'lines+markers',
       type: 'scatter',
       name: boreholeName,
-      marker: { color: '#4680ff', size: 8, symbol: 'diamond' },
-      line: { color: '#4680ff', width: 2 },
+      marker: { color: '#1c3d28', size: 8, symbol: 'diamond' },
+      line: { color: '#1c3d28', width: 2 },
       hovertemplate: `N = %{x}<br>Depth = %{y:.1f} ${typeof du === 'function' ? du() : 'ft'}<extra></extra>`,
     });
   } else {
@@ -267,4 +267,77 @@ function plotLabTestProfile(labData, containerId, testType, valueKey) {
   };
 
   Plotly.newPlot(containerId, [trace], layout, { responsive: true });
+}
+
+// --- MWD multi-panel depth profile ---
+//
+// One panel per sensor channel, sharing depth on the Y axis (axis reversed
+// so depth increases downward — geotech convention, same as CPT). All
+// panels render on the same grid so they read together as a single log.
+// Downsamples to ~3000 points per panel if needed (Plotly handles more,
+// but interactivity gets sluggish past ~5–10k points × many traces).
+function plotMWDProfile(record, containerId) {
+  const container = document.getElementById(containerId);
+  if (!record || !record.channels || record.channels.length === 0) {
+    container.innerHTML = '<p class="no-data">No MWD channels available</p>';
+    return;
+  }
+
+  const channels = record.channels;
+  const depthLabel = record.depthUnit ? `Depth (${record.depthUnit})` : 'Depth';
+
+  // Downsample if dense.
+  const MAX_POINTS = 3000;
+  const stride = record.depths.length > MAX_POINTS
+    ? Math.ceil(record.depths.length / MAX_POINTS) : 1;
+  const depths = stride === 1 ? record.depths
+    : record.depths.filter((_, i) => i % stride === 0);
+
+  const palette = ['#e74c3c', '#2ecc71', '#3498db', '#f39c12', '#9b59b6', '#1abc9c', '#e67e22', '#34495e'];
+  const axStyle = getAxisStyle();
+  const yaxis = { ...axStyle, title: depthLabel, autorange: 'reversed' };
+
+  container.innerHTML = '';
+  const grid = document.createElement('div');
+  grid.className = 'mwd-grid';
+  grid.style.display = 'grid';
+  grid.style.gridTemplateColumns = `repeat(${channels.length}, minmax(140px, 1fr))`;
+  grid.style.gap = '8px';
+  grid.style.overflowX = 'auto';
+  container.appendChild(grid);
+
+  channels.forEach((ch, idx) => {
+    const div = document.createElement('div');
+    div.id = `${containerId}-panel-${idx}`;
+    div.style.minWidth = '140px';
+    grid.appendChild(div);
+
+    const fullVals = record.data[ch.key] || [];
+    const vals = stride === 1 ? fullVals : fullVals.filter((_, i) => i % stride === 0);
+    const color = palette[idx % palette.length];
+    const title = ch.unit ? `${ch.name} (${ch.unit})` : ch.name;
+
+    const trace = {
+      x: vals,
+      y: depths,
+      mode: 'lines',
+      type: 'scatter',
+      line: { color, width: 1.2 },
+      connectgaps: false,
+      hovertemplate: `${ch.name}: %{x:.2f} ${ch.unit || ''}<br>${depthLabel}: %{y:.2f}<extra></extra>`,
+    };
+
+    const layout = {
+      title: { text: title, font: { size: 11 } },
+      xaxis: { ...axStyle, title: '' },
+      yaxis: { ...yaxis, title: idx === 0 ? depthLabel : '', showticklabels: idx === 0 },
+      margin: { t: 40, b: 30, l: idx === 0 ? 60 : 20, r: 10 },
+      plot_bgcolor: '#fff',
+      paper_bgcolor: '#fff',
+      height: 520,
+      showlegend: false,
+    };
+
+    Plotly.newPlot(div.id, [trace], layout, { responsive: true, displayModeBar: false });
+  });
 }

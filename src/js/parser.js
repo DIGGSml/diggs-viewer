@@ -380,6 +380,123 @@ class DIGGSParser {
     return cptData;
   }
 
+  // --- Extract MWD (Measurement While Drilling) ---
+  //
+  // DIGGS layout: <measurement><MeasurementWhileDrilling><outcome><MWDResult>...
+  // The MWDResult holds one ResultSet with N <Property index=...> declarations
+  // and a single <dataValues cs="," ts=" "> block of time-ordered rows.
+  // One column is the depth channel (propertyClass="measured_depth"); the rest
+  // are sensor channels (ROP, RPM, torque, pressures, flow, accel, etc.).
+  // Returns an array of records — one per borehole's MWD log — each with its
+  // own channel set, since rigs record different channels.
+  extractMWDData() {
+    const mwdRecords = [];
+
+    for (const mwd of this._findAll(this.root, 'MeasurementWhileDrilling')) {
+      const mwdId = mwd.getAttribute('gml:id') || '';
+
+      let borehole = 'Unknown';
+      const sfRef = this._find(mwd, 'samplingFeatureRef');
+      if (sfRef) borehole = this._resolveBoreholeRef(this._getXlinkHref(sfRef));
+
+      const result = this._find(mwd, 'MWDResult');
+      if (!result) continue;
+
+      // Build property metadata in index order.
+      const properties = [];
+      for (const prop of this._findAll(result, 'Property')) {
+        const idx = parseInt(prop.getAttribute('index'));
+        if (isNaN(idx)) continue;
+        const nullText = this._getText(prop, 'nullValue');
+        properties.push({
+          index: idx,
+          name: this._getText(prop, 'propertyName') || `Property${idx}`,
+          propertyClass: (this._getText(prop, 'propertyClass') || '').toLowerCase().trim(),
+          uom: this._getText(prop, 'uom') || '',
+          nullValue: nullText ? parseFloat(nullText) : null,
+        });
+      }
+      if (properties.length === 0) continue;
+      properties.sort((a, b) => a.index - b.index);
+
+      // Identify the depth channel. Per the MWD schema this is propertyClass=measured_depth,
+      // but fall back on a name match for non-conformant exporters.
+      const depthProp = properties.find(p =>
+        p.propertyClass === 'measured_depth' ||
+        p.name.toLowerCase().trim() === 'depth'
+      );
+
+      // Parse dataValues block — same row/value splitting as CPT.
+      const dvEl = this._find(result, 'dataValues');
+      if (!dvEl || !dvEl.textContent) continue;
+      const cs = dvEl.getAttribute('cs') || ',';
+      const ts = dvEl.getAttribute('ts') || ' ';
+      const dataText = dvEl.textContent.trim();
+      let rows;
+      if (dataText.includes('\n') && dataText.includes(cs)) {
+        rows = dataText.split('\n').map(r => r.trim()).filter(r => r);
+      } else {
+        rows = dataText.split(ts).filter(r => r.trim());
+      }
+
+      // Optional timestamps (one per row).
+      const timestamps = [];
+      const tplText = this._getText(result, 'timePositionList');
+      if (tplText) {
+        for (const t of tplText.trim().split(/\s+/)) {
+          if (t) timestamps.push(t);
+        }
+      }
+
+      // Column-major: one array per channel, all aligned to depths[].
+      const sensorChannels = properties.filter(p => p !== depthProp);
+      const data = {};
+      for (const ch of sensorChannels) data[_mwdChannelKey(ch)] = [];
+      const depths = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const values = rows[i].split(cs);
+        if (values.length < properties.length) continue;
+
+        // Depth first — skip rows where depth is missing/null.
+        let depthVal = null;
+        if (depthProp) {
+          const raw = parseFloat(values[depthProp.index - 1]);
+          if (!isNaN(raw) && !_isMwdNull(raw, depthProp.nullValue)) {
+            depthVal = raw;
+          }
+        }
+        if (depthProp && depthVal == null) continue;
+
+        depths.push(depthVal);
+        for (const ch of sensorChannels) {
+          const raw = parseFloat(values[ch.index - 1]);
+          const v = (isNaN(raw) || _isMwdNull(raw, ch.nullValue)) ? null : raw;
+          data[_mwdChannelKey(ch)].push(v);
+        }
+      }
+
+      if (depths.length === 0) continue;
+
+      mwdRecords.push({
+        MWD_ID: mwdId,
+        Borehole: borehole,
+        depthUnit: depthProp ? depthProp.uom : '',
+        depths,
+        channels: sensorChannels.map(p => ({
+          name: p.name,
+          key: _mwdChannelKey(p),
+          unit: p.uom,
+          propertyClass: p.propertyClass,
+        })),
+        data,
+        timestamps: timestamps.length === rows.length ? timestamps : [],
+      });
+    }
+
+    return mwdRecords;
+  }
+
   // --- Extract lithology ---
 
   extractLithology() {
@@ -972,6 +1089,30 @@ function _cleanUnitLabel(rawUnit) {
   }
   // Fall back to raw string, cleaned up
   return rawUnit.replace(/\[US\]/g, '').replace(/\[.*?\]/g, '');
+}
+
+// --- MWD channel helpers ---
+//
+// Map an MWD <Property> into a stable JS-safe key. Prefer the schema's
+// propertyClass (e.g. "penetration_rate") since it's machine-readable and
+// stable across files; fall back to the propertyName slug for non-conformant
+// exports that omit propertyClass.
+function _mwdChannelKey(prop) {
+  const cls = (prop.propertyClass || '').trim();
+  if (cls) return cls;
+  return (prop.name || 'channel')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+// True if a parsed numeric matches the property's declared null sentinel
+// (e.g. 9999 with reason="missing"). Uses a small epsilon since the file
+// declares the sentinel as text.
+function _isMwdNull(value, nullSentinel) {
+  if (nullSentinel == null) return false;
+  return Math.abs(value - nullSentinel) < 1e-9;
 }
 
 // --- Coordinate validation (from data_uploader.py) ---
