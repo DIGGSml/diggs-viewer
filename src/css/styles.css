@@ -1,17 +1,20 @@
 /* DIGGS Viewer — Self-contained HTML viewer styles */
 
 :root {
-  --primary: #4680ff;
-  --primary-light: #e8efff;
+  --primary: #1c3d28;
+  --primary-mid: #2a5a3a;
+  --primary-light: #eaf4ed;
+  --accent: #c8a84b;
+  --accent-hover: #b8962e;
   --success: #28a745;
   --danger: #dc3545;
   --warning: #fd7e14;
   --info: #17a2b8;
-  --bg: #f4f7fa;
+  --bg: #f7f4ee;
   --card-bg: #ffffff;
-  --border: #dee2e6;
-  --text: #333333;
-  --text-muted: #6c757d;
+  --border: #e8ede9;
+  --text: #1c3d28;
+  --text-muted: #6c7a6e;
   --radius: 8px;
   --shadow: 0 2px 8px rgba(0,0,0,0.08);
 }
@@ -28,7 +31,7 @@ body {
 /* --- Header --- */
 
 .app-header {
-  background: linear-gradient(135deg, var(--primary), #3366cc);
+  background: var(--primary);
   color: white;
   padding: 16px 24px;
   display: flex;
@@ -45,8 +48,8 @@ body {
 }
 
 .app-logo {
-  width: 32px;
-  height: 32px;
+  width: 80px;
+  height: 80px;
   object-fit: contain;
   flex-shrink: 0;
 }
@@ -218,8 +221,8 @@ body {
 .file-btn {
   display: inline-block;
   padding: 10px 24px;
-  background: var(--primary);
-  color: white;
+  background: var(--accent);
+  color: var(--primary);
   border: none;
   border-radius: var(--radius);
   cursor: pointer;
@@ -229,7 +232,7 @@ body {
 }
 
 .file-btn:hover {
-  background: #3366cc;
+  background: var(--accent-hover);
 }
 
 #file-input { display: none; }
@@ -396,8 +399,8 @@ body {
 .download-btn {
   display: inline-block;
   padding: 8px 18px;
-  background: var(--primary);
-  color: white;
+  background: var(--accent);
+  color: var(--primary);
   border: none;
   border-radius: var(--radius);
   cursor: pointer;
@@ -408,7 +411,7 @@ body {
 }
 
 .download-btn:hover {
-  background: #3366cc;
+  background: var(--accent-hover);
 }
 
 /* --- Charts --- */
@@ -702,8 +705,8 @@ body {
   align-items: center;
   gap: 6px;
   padding: 10px 20px;
-  background: var(--primary);
-  color: white;
+  background: var(--accent);
+  color: var(--primary);
   border: none;
   border-radius: var(--radius);
   cursor: pointer;
@@ -712,7 +715,7 @@ body {
   transition: background 0.2s;
 }
 
-.validate-btn:hover { background: #3366cc; }
+.validate-btn:hover { background: var(--accent-hover); }
 
 .validate-btn:disabled {
   opacity: 0.6;
@@ -757,12 +760,26 @@ body {
 
 /* --- Map --- */
 
+/* Let the Map tab break out of the standard padded/centered tab-panel so the
+   map can fill the viewport edge-to-edge. Height is set dynamically by JS
+   based on the actual viewport. */
+.tab-panel#tab-map {
+  max-width: none;
+  padding: 0;
+}
+
 #map-container {
   background: var(--card-bg);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  height: 550px;
   overflow: hidden;
+  /* Fallback height before JS resizes it (e.g. very brief flash on load). */
+  height: calc(100vh - 160px);
+}
+
+/* Strip the default Leaflet marker drop-shadow / background so our inline-SVG
+   pin renders cleanly. */
+.boring-pin {
+  background: transparent;
+  border: none;
 }
 
 .map-offline-msg {
@@ -773,6 +790,7 @@ body {
   background: var(--card-bg);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+  margin: 24px;
 }
 
 .map-legend {
@@ -780,7 +798,6 @@ body {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   padding: 10px 16px;
-  margin-top: 12px;
   font-size: 13px;
   display: flex;
   gap: 20px;
@@ -798,6 +815,12 @@ body {
   height: 14px;
   border-radius: 50%;
   border: 1px solid rgba(0,0,0,0.2);
+}
+
+.map-legend-icon {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
 }
 
 /* --- Print --- */

@@ -4,25 +4,111 @@
  * Renders a 2D fence diagram as SVG connecting soil layers between boreholes
  */
 
+function _lonFactor(lat) {
+  return 111320 * Math.cos(lat * Math.PI / 180);
+}
+
+// Orthogonal regression (PCA) — handles vertical/near-vertical configurations
+// that ordinary y-on-x regression would blow up on.
+function _bestFitTransect(points) {
+  const meanLat = points.reduce((s, p) => s + p.lat, 0) / points.length;
+  const meanLon = points.reduce((s, p) => s + p.lon, 0) / points.length;
+  const latFactor = 111000;
+  const lonFactor = _lonFactor(meanLat);
+
+  const xy = points.map(p => ({
+    x: (p.lon - meanLon) * lonFactor,
+    y: (p.lat - meanLat) * latFactor,
+  }));
+
+  let Sxx = 0, Syy = 0, Sxy = 0;
+  for (const p of xy) {
+    Sxx += p.x * p.x;
+    Syy += p.y * p.y;
+    Sxy += p.x * p.y;
+  }
+
+  const theta = 0.5 * Math.atan2(2 * Sxy, Sxx - Syy);
+  const ux = Math.cos(theta);
+  const uy = Math.sin(theta);
+
+  const ts = xy.map(p => p.x * ux + p.y * uy);
+  const tMin = Math.min(...ts);
+  const tMax = Math.max(...ts);
+
+  return {
+    startLat: meanLat + (tMin * uy) / latFactor,
+    startLon: meanLon + (tMin * ux) / lonFactor,
+    endLat:   meanLat + (tMax * uy) / latFactor,
+    endLon:   meanLon + (tMax * ux) / lonFactor,
+  };
+}
+
+function _projectBoreholesOntoLine(points, lineStart, lineEnd) {
+  const meanLat = (lineStart.lat + lineEnd.lat) / 2;
+  const latFactor = 111000;
+  const lonFactor = _lonFactor(meanLat);
+
+  const dx = (lineEnd.lon - lineStart.lon) * lonFactor;
+  const dy = (lineEnd.lat - lineStart.lat) * latFactor;
+  const len = Math.sqrt(dx * dx + dy * dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+
+  const projected = new Map();
+  for (const p of points) {
+    const px = (p.lon - lineStart.lon) * lonFactor;
+    const py = (p.lat - lineStart.lat) * latFactor;
+    projected.set(p.name, px * ux + py * uy);
+  }
+
+  const tMin = Math.min(...projected.values());
+  for (const [name, t] of projected) projected.set(name, t - tMin);
+  return projected;
+}
+
 /**
- * Calculate cumulative distances between boreholes from lat/lon
- * Uses simple Euclidean approximation (111km/deg lat, 85km/deg lon)
+ * Compute fence-diagram x-positions for each borehole. If a transect is cached
+ * on AppState (either an earlier fit or the user's manual drag), project onto
+ * it; otherwise fit a fresh PCA best-fit line through the coord-bearing
+ * boreholes and cache that as the transect. Boreholes lacking coordinates
+ * fall back to 100 m synthetic spacing appended after the last projected one.
  */
 function _calcBoreholeDistances(boreholeOrder, boreholes) {
-  const distances = [0];
-  for (let i = 1; i < boreholeOrder.length; i++) {
-    const prev = boreholes.find(b => b.Name === boreholeOrder[i - 1]);
-    const curr = boreholes.find(b => b.Name === boreholeOrder[i]);
-    if (prev && curr && prev.Latitude != null && curr.Latitude != null) {
-      const dlat = (curr.Latitude - prev.Latitude) * 111000;
-      const dlon = (curr.Longitude - prev.Longitude) * 85000;
-      distances.push(distances[i - 1] + Math.sqrt(dlat * dlat + dlon * dlon));
-    } else {
-      // No coords — space evenly at 100m
-      distances.push(distances[i - 1] + 100);
-    }
+  const withCoords = boreholeOrder
+    .map(name => {
+      const bh = boreholes.find(b => b.Name === name);
+      return bh && bh.Latitude != null && bh.Longitude != null
+        ? { name, lat: bh.Latitude, lon: bh.Longitude }
+        : null;
+    })
+    .filter(p => p);
+
+  // Not enough georeferenced boreholes for a transect — fall back to the
+  // legacy fixed 100 m synthetic spacing.
+  if (withCoords.length < 2) {
+    return boreholeOrder.map((_, i) => i * 100);
   }
-  return distances;
+
+  let transect = (typeof AppState !== 'undefined') ? AppState.crossSectionTransect : null;
+  if (!transect) {
+    transect = { ..._bestFitTransect(withCoords), source: 'fit' };
+    if (typeof AppState !== 'undefined') AppState.crossSectionTransect = transect;
+  }
+
+  const distMap = _projectBoreholesOntoLine(
+    withCoords,
+    { lat: transect.startLat, lon: transect.startLon },
+    { lat: transect.endLat, lon: transect.endLon },
+  );
+
+  const projectedMax = Math.max(...distMap.values());
+  let synthetic = projectedMax;
+  return boreholeOrder.map(name => {
+    if (distMap.has(name)) return distMap.get(name);
+    synthetic += 100;
+    return synthetic;
+  });
 }
 
 /**
@@ -104,6 +190,11 @@ function createCrossSectionSVG(opts) {
     const waterElev = wt ? elev - wt.Water_Depth_ft : null;
     return { name, dist: distances[i], elev, layers, waterElev };
   });
+
+  // Sort by transect position so trapezoid bands, the ground-surface line, and
+  // the water-table line all draw left-to-right without zigzagging when the
+  // user's selection order differs from their projected order on the transect.
+  profiles.sort((a, b) => a.dist - b.dist);
 
   // Determine coordinate ranges
   const allElevs = [];

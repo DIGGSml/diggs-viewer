@@ -25,6 +25,7 @@ const AppState = {
   leafletMap: null,        // Leaflet instance — kept alive across tab switches
   crossSectionMap: null,   // Leaflet inset on the cross-section tab
   crossSectionLayers: null,
+  crossSectionTransect: null,  // { startLat, startLon, endLat, endLon, source: 'fit'|'manual' }
 };
 
 // --- Unit helpers ---
@@ -372,6 +373,61 @@ function loadLeaflet() {
   });
 }
 
+// Borehole map-marker icon — embedded as a base64 PNG so the marker renders
+// offline without a separate image request. Source: /home/boring.png (64x64).
+const BORING_ICON_DATA_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABJUlEQVR42u2aXQ6CMBAG294EE0zw/meRRBI9Cj6REKMiuH+FmWeTyuy3sKWkBAAAAAAA4EDTdmPTdqPX+uXoBTi8gOwR+aXfPIY+707A1j7XlpGjXPj9dk0ppXQ6X0xF5CgVnwTMeZWhISFHifs7ARYiSpReXyNHco0S/eK1JVQ1B3xrE3cBVuPsXILEmlVOgpJJKDVVX2PtavcCUikoNVef3aBAEaoWINEGvA/YW++v3SeQAKkb0NZ+/LT/1648CZAWIFVJy+qLCLB8gckgFFXAlAKPNvg3gSRAuhKWKZC4/6gkwPOJ4CpgXhFtCVJPn6L5x7QkhD4X0JTwGPosPXeYng3+cvxlPXC5nQ4vHYZaTZqH/z7AHb4RYjMEAAAAAAAA5jwBLMCEr7DJ3VkAAAAASUVORK5CYII=';
+
+function _boringIcon() {
+  return L.icon({
+    iconUrl: BORING_ICON_DATA_URI,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+    popupAnchor: [0, -14],
+  });
+}
+
+// Inline SVG pin — no external image fetch, so markers render even if the
+// Leaflet default-icon PNGs aren't reachable. Sized so the tip lands on
+// the borehole location (iconAnchor = bottom-center).
+function _boringPinIcon(color) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="40" viewBox="0 0 28 40">
+    <path d="M14 0 C6.27 0 0 6.27 0 14 c0 10.5 14 26 14 26 s14 -15.5 14 -26 C28 6.27 21.73 0 14 0 z"
+          fill="${color}" stroke="#ffffff" stroke-width="1.5"/>
+    <circle cx="14" cy="14" r="5" fill="#ffffff"/>
+  </svg>`;
+  return L.divIcon({
+    html: svg,
+    className: 'boring-pin',
+    iconSize: [28, 40],
+    iconAnchor: [14, 40],
+    popupAnchor: [0, -36],
+  });
+}
+
+// Switch to the Boring Log tab and select the named borehole. Wired from
+// the map popup link so users can jump from a map pin to its boring log.
+function openBoringLogForBorehole(name) {
+  switchTab('boring-log');
+  // renderBoringLog runs lazily; if the tab hadn't rendered yet, switchTab
+  // just built the select. Either way the <select> exists now.
+  const select = document.getElementById('bl-bh-select');
+  if (select) {
+    select.value = name;
+    if (typeof updateBoringLog === 'function') updateBoringLog(name);
+  }
+}
+
+// Resize the map container to fill the viewport below the header+tabs.
+// Called on render and on window resize so layout stays responsive.
+function _resizeMapContainer() {
+  const el = document.getElementById('map-container');
+  if (!el) return;
+  const top = el.getBoundingClientRect().top;
+  const h = Math.max(300, window.innerHeight - top - 8);
+  el.style.height = h + 'px';
+  if (AppState.leafletMap) AppState.leafletMap.invalidateSize();
+}
+
 function renderMap() {
   const container = document.getElementById('tab-map');
 
@@ -380,13 +436,23 @@ function renderMap() {
     return;
   }
 
-  container.innerHTML = '<div id="map-container" style="height:550px;">Loading map...</div>';
+  container.innerHTML = '<div id="map-container">Loading map...</div>';
+  _resizeMapContainer();
+  if (!AppState._mapResizeBound) {
+    window.addEventListener('resize', _resizeMapContainer);
+    AppState._mapResizeBound = true;
+  }
 
   const featureColors = {
     Borehole: '#e74c3c',
     Sounding: '#3498db',
     Other: '#f39c12',
   };
+
+  // Set of borehole names that actually have lithology — only those get a
+  // "View boring log" link in the popup, since the Boring Log tab needs
+  // lithology rows to render anything.
+  const lithologyNames = new Set(AppState.lithology.map(l => l.Borehole));
 
   loadLeaflet().then(() => {
     const mapDiv = document.getElementById('map-container');
@@ -401,6 +467,7 @@ function renderMap() {
 
     const map = L.map(mapDiv);
     AppState.leafletMap = map;
+    _resizeMapContainer();
 
     const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors',
@@ -413,38 +480,65 @@ function renderMap() {
     satellite.addTo(map);
     L.control.layers({ 'Satellite': satellite, 'Street': street }, null, { position: 'topright' }).addTo(map);
 
+    // Build popup DOM (rather than HTML strings) so we can attach a real
+    // click handler for the boring-log link without escaping names into
+    // an onclick attribute.
+    const _buildPopup = (feature, type) => {
+      const el = document.createElement('div');
+      const depth = feature.Total_Depth != null
+        ? feature.Total_Depth.toFixed(1) + ' ' + du()
+        : '—';
+      el.innerHTML =
+        `<strong>${escapeHtml(feature.Name)}</strong><br>` +
+        `Type: ${escapeHtml(type)}<br>` +
+        `Depth: ${depth}<br>` +
+        `Lat: ${feature.Latitude.toFixed(6)}<br>` +
+        `Lon: ${feature.Longitude.toFixed(6)}`;
+      if (lithologyNames.has(feature.Name)) {
+        const link = document.createElement('a');
+        link.href = '#';
+        link.textContent = 'View boring log →';
+        link.style.cssText = 'display:inline-block; margin-top:8px; color:#1c3d28; font-weight:600; text-decoration:none;';
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          map.closePopup();
+          openBoringLogForBorehole(feature.Name);
+        });
+        el.appendChild(document.createElement('br'));
+        el.appendChild(link);
+      }
+      return el;
+    };
+
     const markers = [];
+    // Boreholes (SPT) get the dedicated boring-target icon; soundings and
+    // other features keep their type-colored SVG pins so the three are
+    // visually distinct on the map.
+    const boreholeIcon = _boringIcon();
+    const soundingIcon = _boringPinIcon(featureColors.Sounding);
+    const otherIcon = _boringPinIcon(featureColors.Other);
 
     // Add boreholes
     for (const bh of AppState.boreholes) {
       if (bh.Latitude == null || bh.Longitude == null) continue;
-      const m = L.circleMarker([bh.Latitude, bh.Longitude], {
-        radius: 8, color: featureColors.Borehole, fillColor: featureColors.Borehole,
-        fillOpacity: 0.7, weight: 2,
-      }).addTo(map);
-      m.bindPopup(`<strong>${escapeHtml(bh.Name)}</strong><br>Type: Borehole<br>Depth: ${bh.Total_Depth != null ? bh.Total_Depth.toFixed(1) + ' ' + du() : '—'}<br>Lat: ${bh.Latitude.toFixed(6)}<br>Lon: ${bh.Longitude.toFixed(6)}`);
+      const m = L.marker([bh.Latitude, bh.Longitude], { icon: boreholeIcon }).addTo(map);
+      m.bindPopup(_buildPopup(bh, 'Borehole'));
       markers.push(m);
     }
 
     // Add soundings
     for (const s of AppState.soundings) {
       if (s.Latitude == null || s.Longitude == null) continue;
-      const m = L.circleMarker([s.Latitude, s.Longitude], {
-        radius: 8, color: featureColors.Sounding, fillColor: featureColors.Sounding,
-        fillOpacity: 0.7, weight: 2,
-      }).addTo(map);
-      m.bindPopup(`<strong>${escapeHtml(s.Name)}</strong><br>Type: Sounding<br>Depth: ${s.Total_Depth != null ? s.Total_Depth.toFixed(1) + ' ' + du() : '—'}<br>Lat: ${s.Latitude.toFixed(6)}<br>Lon: ${s.Longitude.toFixed(6)}`);
+      const m = L.marker([s.Latitude, s.Longitude], { icon: soundingIcon }).addTo(map);
+      m.bindPopup(_buildPopup(s, 'Sounding'));
       markers.push(m);
     }
 
     // Add other features
     for (const f of AppState.otherFeatures) {
       if (f.Latitude == null || f.Longitude == null) continue;
-      const m = L.circleMarker([f.Latitude, f.Longitude], {
-        radius: 8, color: featureColors.Other, fillColor: featureColors.Other,
-        fillOpacity: 0.7, weight: 2,
-      }).addTo(map);
-      m.bindPopup(`<strong>${escapeHtml(f.Name)}</strong><br>Type: ${escapeHtml(f.Type)}<br>Depth: ${f.Total_Depth != null ? f.Total_Depth.toFixed(1) + ' ' + du() : '—'}<br>Lat: ${f.Latitude.toFixed(6)}<br>Lon: ${f.Longitude.toFixed(6)}`);
+      const m = L.marker([f.Latitude, f.Longitude], { icon: otherIcon }).addTo(map);
+      m.bindPopup(_buildPopup(f, f.Type || 'Other'));
       markers.push(m);
     }
 
@@ -456,19 +550,29 @@ function renderMap() {
       map.setView([39.8, -98.5], 4); // Center of US
     }
 
-    // Legend
+    // Legend — Leaflet control so it overlays the map instead of pushing
+    // the container shorter (we want the map at full viewport height).
     const legendTypes = [];
-    if (AppState.boreholes.some(b => b.Latitude != null)) legendTypes.push({ label: 'Borehole', color: featureColors.Borehole });
+    if (AppState.boreholes.some(b => b.Latitude != null)) legendTypes.push({ label: 'Borehole', icon: true });
     if (AppState.soundings.some(s => s.Latitude != null)) legendTypes.push({ label: 'Sounding', color: featureColors.Sounding });
     if (AppState.otherFeatures.some(f => f.Latitude != null)) legendTypes.push({ label: 'Other', color: featureColors.Other });
 
     if (legendTypes.length > 1) {
-      let legendHtml = '<div class="map-legend">';
-      for (const t of legendTypes) {
-        legendHtml += `<div class="map-legend-item"><span class="map-legend-swatch" style="background:${t.color}"></span>${t.label}</div>`;
-      }
-      legendHtml += '</div>';
-      container.insertAdjacentHTML('beforeend', legendHtml);
+      const legend = L.control({ position: 'bottomleft' });
+      legend.onAdd = () => {
+        const div = L.DomUtil.create('div', 'map-legend');
+        let html = '';
+        for (const t of legendTypes) {
+          // Boreholes show the actual marker icon; soundings/other use a colored swatch.
+          const mark = t.icon
+            ? `<img class="map-legend-icon" src="${BORING_ICON_DATA_URI}" alt="">`
+            : `<span class="map-legend-swatch" style="background:${t.color}"></span>`;
+          html += `<div class="map-legend-item">${mark}${t.label}</div>`;
+        }
+        div.innerHTML = html;
+        return div;
+      };
+      legend.addTo(map);
     }
   }).catch(err => {
     document.getElementById('map-container').innerHTML = `<div class="map-offline-msg">${escapeHtml(err.message)}</div>`;
@@ -762,6 +866,9 @@ function renderCrossSection() {
     AppState.crossSectionMap = null;
     AppState.crossSectionLayers = null;
   }
+  // Fresh panel → forget any prior transect so the new render starts from a
+  // best-fit on the current data (matters after a new XML upload).
+  AppState.crossSectionTransect = null;
 
   let html = '<div class="controls">';
   html += '<label>Boreholes (select 2+):</label>';
@@ -771,6 +878,7 @@ function renderCrossSection() {
   }
   html += '</select>';
   html += '<button class="download-btn" onclick="updateCrossSection()" style="margin: 0;">Update</button>';
+  html += '<button class="download-btn" onclick="resetCrossSectionTransect()" style="margin: 0;">Reset to fit</button>';
   html += '<button class="download-btn" onclick="printCrossSection()" style="margin: 0;">Print / Save PDF</button>';
   html += '</div>';
   // Section path inset map — shows the polyline through selected boreholes
@@ -807,6 +915,12 @@ function updateCrossSection() {
     return;
   }
 
+  // Drop a stale best-fit so the new selection gets re-fitted. A user-dragged
+  // (source: 'manual') transect persists across selection changes.
+  if (AppState.crossSectionTransect && AppState.crossSectionTransect.source === 'fit') {
+    AppState.crossSectionTransect = null;
+  }
+
   const svg = createCrossSectionSVG({
     boreholeNames: selected,
     boreholes: AppState.boreholes,
@@ -815,6 +929,11 @@ function updateCrossSection() {
   });
   document.getElementById('cross-section-svg').innerHTML = svg;
   _updateCrossSectionMap(selected);
+}
+
+function resetCrossSectionTransect() {
+  AppState.crossSectionTransect = null;
+  updateCrossSection();
 }
 
 /**
@@ -874,22 +993,65 @@ function _updateCrossSectionMap(selectedNames) {
     if (!AppState.crossSectionMap) {
       mapDiv.innerHTML = '';  // clear any prior placeholder text
       const map = L.map(mapDiv, { scrollWheelZoom: false });
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap',
+      const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
         maxZoom: 19,
-      }).addTo(map);
+      });
+      const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+        maxZoom: 19,
+      });
+      satellite.addTo(map);
+      L.control.layers({ 'Satellite': satellite, 'Street': street }, null, { position: 'topright' }).addTo(map);
       AppState.crossSectionMap = map;
       AppState.crossSectionLayers = L.layerGroup().addTo(map);
     }
 
     AppState.crossSectionLayers.clearLayers();
 
-    // Polyline along the section path
-    const latlngs = points.map(p => [p.lat, p.lon]);
-    L.polyline(latlngs, { color: '#3498db', weight: 3, opacity: 0.9 })
-      .addTo(AppState.crossSectionLayers);
+    const transect = AppState.crossSectionTransect;
 
-    // Numbered markers (selection order = section order)
+    if (transect) {
+      const lineStart = L.latLng(transect.startLat, transect.startLon);
+      const lineEnd = L.latLng(transect.endLat, transect.endLon);
+      const transectLine = L.polyline([lineStart, lineEnd], {
+        color: '#c8a84b', weight: 3, opacity: 0.95, dashArray: '8,4',
+      }).addTo(AppState.crossSectionLayers);
+
+      const handleIcon = L.divIcon({
+        className: 'xs-transect-handle',
+        html: '<div style="background:#1c3d28;border:2px solid #fff;width:14px;height:14px;box-shadow:0 1px 3px rgba(0,0,0,0.4);cursor:move;"></div>',
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
+      });
+
+      for (const [latlng, isStart] of [[lineStart, true], [lineEnd, false]]) {
+        const handle = L.marker(latlng, { icon: handleIcon, draggable: true, zIndexOffset: 1000 })
+          .addTo(AppState.crossSectionLayers);
+        handle.on('drag', e => {
+          const ll = e.target.getLatLng();
+          const coords = transectLine.getLatLngs();
+          coords[isStart ? 0 : 1] = ll;
+          transectLine.setLatLngs(coords);
+        });
+        handle.on('dragend', e => {
+          const ll = e.target.getLatLng();
+          const cur = AppState.crossSectionTransect;
+          AppState.crossSectionTransect = {
+            startLat: isStart ? ll.lat : cur.startLat,
+            startLon: isStart ? ll.lng : cur.startLon,
+            endLat:   isStart ? cur.endLat   : ll.lat,
+            endLon:   isStart ? cur.endLon   : ll.lng,
+            source: 'manual',
+          };
+          updateCrossSection();
+        });
+      }
+    }
+
+    // Numbered borehole markers (numbered by multi-select selection order,
+    // not transect position — so the numbers may not read left-to-right
+    // along the section line, and that is intentional).
     for (const p of points) {
       const icon = L.divIcon({
         className: 'xs-section-marker',
@@ -898,11 +1060,20 @@ function _updateCrossSectionMap(selectedNames) {
         iconAnchor: [12, 12],
       });
       L.marker([p.lat, p.lon], { icon })
-        .bindPopup(`<strong>${escapeHtml(p.name)}</strong><br>Section position: ${p.order} of ${points.length}`)
+        .bindPopup(`<strong>${escapeHtml(p.name)}</strong><br>Selection position: ${p.order} of ${points.length}`)
         .addTo(AppState.crossSectionLayers);
     }
 
-    AppState.crossSectionMap.fitBounds(L.latLngBounds(latlngs).pad(0.25));
+    // Fit only on a fresh fit (initial load or reset). After a drag the user's
+    // current view should be preserved.
+    if (!transect || transect.source === 'fit') {
+      const bounds = L.latLngBounds(points.map(p => [p.lat, p.lon]));
+      if (transect) {
+        bounds.extend([transect.startLat, transect.startLon]);
+        bounds.extend([transect.endLat, transect.endLon]);
+      }
+      AppState.crossSectionMap.fitBounds(bounds.pad(0.25));
+    }
   }).catch(err => {
     mapDiv.innerHTML = `<div class="map-offline-msg" style="padding:24px;text-align:center;color:#666;">Section-path preview unavailable: ${escapeHtml(err.message)}</div>`;
   });
@@ -963,9 +1134,17 @@ function updateLabView(testType) {
 
 // --- Interpretation tab ---
 
+function _wtForBorehole(borehole) {
+  const wt = AppState.waterTable.find(w => w.Borehole === borehole);
+  return wt && wt.Water_Depth_ft != null ? wt.Water_Depth_ft : null;
+}
+
 function renderInterpretation() {
   const container = document.getElementById('tab-interpretation');
   const boreholes = [...new Set(AppState.sptData.map(s => s.Borehole))];
+
+  const initialWT = boreholes.length ? _wtForBorehole(boreholes[0]) : null;
+  const wtValueAttr = initialWT != null ? `value="${initialWT}"` : 'value="10"';
 
   let html = '<div class="controls">';
   html += '<label>Borehole: <select id="interp-bh-select">';
@@ -973,7 +1152,7 @@ function renderInterpretation() {
     html += `<option value="${escapeHtml(bh)}">${escapeHtml(bh)}</option>`;
   }
   html += '</select></label>';
-  html += `<label>Water Table (${du()}): <input type="number" id="interp-wt" value="10" step="0.5" min="0" style="width: 80px;"></label>`;
+  html += `<label>Water Table (${du()}): <input type="number" id="interp-wt" ${wtValueAttr} step="0.5" min="0" style="width: 80px;" title="Auto-filled from borehole reading when available; edit to override"></label>`;
   html += '<label>Hammer Eff. (%): <input type="number" id="interp-he" value="" placeholder="Auto" step="1" min="0" max="100" style="width: 80px;"></label>';
   html += '<button class="download-btn" onclick="recalcInterpretation()">Recalculate</button>';
   html += '</div>';
@@ -982,7 +1161,18 @@ function renderInterpretation() {
   container.innerHTML = html;
 
   const select = document.getElementById('interp-bh-select');
-  select.addEventListener('change', () => recalcInterpretation());
+  const wtInput = document.getElementById('interp-wt');
+  // Track whether the user has overridden the auto-fill; if so, don't clobber.
+  wtInput.dataset.userEdited = '0';
+  wtInput.addEventListener('input', () => { wtInput.dataset.userEdited = '1'; });
+
+  select.addEventListener('change', () => {
+    if (wtInput.dataset.userEdited !== '1') {
+      const wt = _wtForBorehole(select.value);
+      wtInput.value = wt != null ? wt : 10;
+    }
+    recalcInterpretation();
+  });
   recalcInterpretation();
 }
 
@@ -1004,6 +1194,18 @@ function recalcInterpretation() {
     return;
   }
 
+  // Pick reporting units to match the file's depth unit. SPT correlations
+  // return γ in kN/m³ and Es/Su in kPa; convert for imperial files.
+  const imperial = du() !== 'm';
+  const gammaLabel = imperial ? 'γ (pcf)' : 'γ (kN/m³)';
+  const esLabel    = imperial ? 'Es (tsf)' : 'Es (kPa)';
+  const suLabel    = imperial ? 'Su (tsf)' : 'Su (kPa)';
+  const KNM3_TO_PCF = 6.36588;
+  const KPA_TO_TSF = 0.01044;
+  const fmtGamma = v => v == null ? '—' : (imperial ? (v * KNM3_TO_PCF).toFixed(1) : v.toFixed(1));
+  const fmtEs    = v => v == null ? '—' : (imperial ? (v * KPA_TO_TSF).toFixed(2) : v.toFixed(0));
+  const fmtSu    = v => v == null ? '—' : (imperial ? (v * KPA_TO_TSF).toFixed(2) : v.toFixed(1));
+
   // Format for table display
   const tableData = results.map(r => ({
     [`Depth (${du()})`]: r.depth,
@@ -1014,23 +1216,23 @@ function recalcInterpretation() {
     'Classification': r.density,
     'φ (°)': r.phi != null ? r.phi.toFixed(1) : '—',
     'Dr (%)': r.Dr != null ? r.Dr.toFixed(1) : '—',
-    'γ (kN/m³)': r.gamma != null ? r.gamma.toFixed(1) : '—',
-    'Es (kPa)': r.Es != null ? r.Es.toFixed(0) : '—',
-    'Su (kPa)': r.Su != null ? r.Su.toFixed(1) : '—',
+    [gammaLabel]: fmtGamma(r.gamma),
+    [esLabel]: fmtEs(r.Es),
+    [suLabel]: fmtSu(r.Su),
   }));
 
   let html = createStyledTable(tableData, `SPT Correlations — ${borehole}`, '#2a5a3a');
   html += `<button class="download-btn" onclick="downloadCSV(${JSON.stringify(tableData).replace(/"/g, '&quot;')}, 'spt_correlations.csv')">Download CSV</button>`;
 
-  // Bearing capacity quick estimates
-  const avgN = results.reduce((s, r) => s + (r.N || 0), 0) / results.length;
-  html += '<div class="section-title">Quick Bearing Capacity Estimates (B=1.5m, Df=1.0m)</div>';
-  const B = 1.5, Df = 1.0;
-  html += createMetricRow([
-    { label: 'Meyerhof (kPa)', value: GeoCalc.bearingMeyerhof(avgN, B, Df).toFixed(0), color: '#e74c3c' },
-    { label: 'Bowles (kPa)', value: GeoCalc.bearingBowles(avgN, B, Df).toFixed(0), color: '#2ecc71' },
-    { label: 'Terzaghi-Peck (kPa)', value: GeoCalc.bearingTerzaghiPeck(avgN, B, Df).toFixed(0), color: '#3498db' },
-  ]);
+  // Bearing capacity quick estimates — hidden per request; restore by uncommenting.
+  // const avgN = results.reduce((s, r) => s + (r.N || 0), 0) / results.length;
+  // html += '<div class="section-title">Quick Bearing Capacity Estimates (B=1.5m, Df=1.0m)</div>';
+  // const B = 1.5, Df = 1.0;
+  // html += createMetricRow([
+  //   { label: 'Meyerhof (kPa)', value: GeoCalc.bearingMeyerhof(avgN, B, Df).toFixed(0), color: '#e74c3c' },
+  //   { label: 'Bowles (kPa)', value: GeoCalc.bearingBowles(avgN, B, Df).toFixed(0), color: '#2ecc71' },
+  //   { label: 'Terzaghi-Peck (kPa)', value: GeoCalc.bearingTerzaghiPeck(avgN, B, Df).toFixed(0), color: '#3498db' },
+  // ]);
 
   resultsDiv.innerHTML = html;
 }

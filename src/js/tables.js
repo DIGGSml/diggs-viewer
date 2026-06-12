@@ -6,7 +6,7 @@
 function createStyledTable(data, title, headerColor, maxHeight) {
   if (!data || data.length === 0) return '<p class="no-data">No data available</p>';
 
-  headerColor = headerColor || '#4680ff';
+  headerColor = headerColor || '#1c3d28';
   maxHeight = maxHeight || '500px';
 
   // Drop columns where every row is null / undefined / empty / NaN
@@ -64,7 +64,7 @@ function escapeHtml(str) {
 }
 
 function createMetricCard(label, value, color, icon) {
-  color = color || '#4680ff';
+  color = color || '#1c3d28';
   const displayVal = value != null ? value : '—';
   return `<div class="metric-card" style="border-left: 4px solid ${color};">
     <div class="metric-value" style="color: ${color}">${escapeHtml(String(displayVal))}</div>

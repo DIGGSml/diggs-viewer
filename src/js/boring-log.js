@@ -93,13 +93,119 @@ function _svgPatternDefs() {
  * Unknown codes fall through to a neutral grey DEFAULT instead of being
  * mis-rendered as CL.
  */
-function _getSoilStyle(uscsCode) {
-  if (!uscsCode) return { ...USCS_PATTERNS.DEFAULT, key: 'DEFAULT' };
-  // Exact match first (handles case-sensitive forms like "CL-ML")
-  if (USCS_PATTERNS[uscsCode]) return { ...USCS_PATTERNS[uscsCode], key: uscsCode };
-  // Case-insensitive fallback
-  const upper = String(uscsCode).trim().toUpperCase();
-  if (USCS_PATTERNS[upper]) return { ...USCS_PATTERNS[upper], key: upper };
+// DIGGS schema canon: <legendCode> is the graphic-pattern field, and the
+// official DocumentationExample.xml uses lowercase descriptive names —
+// "shale", "claystone", "asphalt", "silt" — not USCS-style symbols. This
+// alias map lets the viewer accept both conventions so a DIGGS-compliant
+// exporter and a USCS-symbol exporter both render correctly.
+const LEGEND_ALIASES = {
+  // soils
+  'gravel': 'GP', 'sand': 'SP', 'silt': 'ML', 'clay': 'CL',
+  'organic': 'OL', 'organicsoil': 'OL', 'peat': 'PT',
+  'topsoil': 'TOPSOIL', 'top_soil': 'TOPSOIL',
+  // mixed lithology from the DIGGS doc example — no canonical pattern,
+  // map to the unclassified fallback rather than picking arbitrarily
+  'gravelsandsiltclay': 'DEFAULT',
+  // surface / fill
+  'fill': 'FILL', 'asphalt': 'ASPH', 'asph': 'ASPH',
+  'crushedstone': 'CRA', 'aggregate': 'CRA',
+  // rock
+  'rock': 'ROCK', 'bedrock': 'BR',
+  'weatheredrock': 'WR', 'weathered_rock': 'WR', 'weathered': 'WR',
+  'shale': 'SH', 'claystone': 'SH', 'siltstone': 'SH',
+  'sandstone': 'SS', 'limestone': 'LS',
+  'diabase': 'DBS', 'basalt': 'DBS', 'granite': 'DBS',
+};
+
+// Specific descriptors — first match wins. Order specific-to-general so
+// "weathered rock" beats "rock", "sandstone" beats "sand", etc.
+const SPECIFIC_KEYWORDS = [
+  // rock-state and rock-type modifiers — must win over generic "rock"
+  ['weathered rock', 'WR'], ['weathered', 'WR'],
+  ['sandstone', 'SS'], ['limestone', 'LS'],
+  ['claystone', 'SH'], ['siltstone', 'SH'], ['shale', 'SH'],
+  ['diabase', 'DBS'], ['basalt', 'DBS'], ['granite', 'DBS'],
+  ['bedrock', 'BR'], ['rock', 'ROCK'],
+  // surface materials
+  ['asphalt', 'ASPH'], ['topsoil', 'TOPSOIL'], ['top soil', 'TOPSOIL'],
+  ['crushed stone', 'CRA'], ['aggregate', 'CRA'],
+  ['fill', 'FILL'],
+  // distinctive soils
+  ['peat', 'PT'], ['organic', 'OL'],
+];
+
+// Generic soil nouns. Standard adjective-noun pattern: "silty CLAY" → clay
+// is the classification. Use "last occurrence wins" so the head noun (which
+// comes last in english) wins over modifiers.
+const SOIL_NOUNS = [
+  ['clay', 'CL'], ['silt', 'ML'], ['sand', 'SP'], ['gravel', 'GP'],
+];
+
+function _scanForCapsKeyword(d, list) {
+  for (const [needle, key] of list) {
+    if (d.includes(needle.toUpperCase())) return key;
+  }
+  return null;
+}
+
+function _scanForLastCapsNoun(d) {
+  let bestPos = -1, bestKey = null;
+  for (const [needle, key] of SOIL_NOUNS) {
+    const p = d.lastIndexOf(needle.toUpperCase());
+    if (p > bestPos) { bestPos = p; bestKey = key; }
+  }
+  return bestKey;
+}
+
+function _scanForLowercaseKeyword(dl, list) {
+  for (const [needle, key] of list) {
+    if (dl.includes(needle)) return key;
+  }
+  return null;
+}
+
+function _scanForLastLowercaseNoun(dl) {
+  let bestPos = -1, bestKey = null;
+  for (const [needle, key] of SOIL_NOUNS) {
+    const p = dl.lastIndexOf(needle);
+    if (p > bestPos) { bestPos = p; bestKey = key; }
+  }
+  return bestKey;
+}
+
+function _getSoilStyle(uscsCode, description) {
+  // 1. Exact match (handles case-sensitive forms like "CL-ML")
+  if (uscsCode && USCS_PATTERNS[uscsCode]) {
+    return { ...USCS_PATTERNS[uscsCode], key: uscsCode };
+  }
+  // 2. Case-insensitive code match
+  if (uscsCode) {
+    const upper = String(uscsCode).trim().toUpperCase();
+    if (USCS_PATTERNS[upper]) return { ...USCS_PATTERNS[upper], key: upper };
+    // 3. DIGGS-canonical legend-code alias (lowercase, stripped of spaces/dashes)
+    const norm = String(uscsCode).trim().toLowerCase().replace(/[\s_-]+/g, '');
+    if (LEGEND_ALIASES[norm]) {
+      const key = LEGEND_ALIASES[norm];
+      return { ...USCS_PATTERNS[key], key };
+    }
+  }
+  // 4. Description scan — two-phase. Caps-first because the head noun is
+  // typically uppercased in geotechnical descriptions ("silty CLAY").
+  if (description) {
+    const d = String(description);
+    // 4a. Caps specifics (rock, peat, asphalt, etc.) — first match wins
+    let key = _scanForCapsKeyword(d, SPECIFIC_KEYWORDS);
+    if (key) return { ...USCS_PATTERNS[key], key };
+    // 4b. Caps soil nouns — last occurrence wins (head-noun convention)
+    key = _scanForLastCapsNoun(d);
+    if (key) return { ...USCS_PATTERNS[key], key };
+    // 4c. No caps in the description — fall back to lowercase scans
+    const dl = d.toLowerCase();
+    key = _scanForLowercaseKeyword(dl, SPECIFIC_KEYWORDS);
+    if (key) return { ...USCS_PATTERNS[key], key };
+    key = _scanForLastLowercaseNoun(dl);
+    if (key) return { ...USCS_PATTERNS[key], key };
+  }
   return { ...USCS_PATTERNS.DEFAULT, key: 'DEFAULT' };
 }
 
@@ -138,7 +244,7 @@ function createBoringLogSVG(opts) {
   // Layout constants
   const headerH = 80;
   const colHeaderH = 30;
-  const pxPerFt = 6;
+  const pxPerFt = maxDepth > 0 ? Math.max(6, Math.min(20, 500 / maxDepth)) : 6;
   const bodyH = maxDepth * pxPerFt;
   const totalH = headerH + colHeaderH + bodyH + 40;
   const bodyTop = headerH + colHeaderH;
@@ -191,7 +297,7 @@ function createBoringLogSVG(opts) {
   const maxN = Math.max(50, ...sptData.map(s => s.N_Value || 0));
   const nScale = cols.nPlot.w / maxN;
 
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${totalH}" width="${W}" style="font-family: Arial, sans-serif; font-size: 10px; background: white;">`;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${totalH}" preserveAspectRatio="xMidYMin meet" style="display:block; width:100%; height:auto; font-family: Arial, sans-serif; font-size: 10px; background: white;">`;
   svg += `<defs>${_svgPatternDefs()}</defs>`;
 
   // --- Header ---
@@ -206,16 +312,28 @@ function createBoringLogSVG(opts) {
   svg += `<text x="250" y="38" font-size="11">Total Depth: ${bhDepth != null ? bhDepth.toFixed(1) : '—'} ${_du}</text>`;
   svg += `<text x="500" y="38" font-size="11">Elevation: ${bhElev != null ? parseFloat(bhElev).toFixed(1) : '—'} ${_du}</text>`;
   if (waterDepth != null) {
-    svg += `<text x="10" y="56" font-size="11" fill="#1a73e8">Water Table: ${waterDepth.toFixed(1)} ${_du}</text>`;
+    svg += `<text x="10" y="56" font-size="11" fill="#c8a84b">Water Table: ${waterDepth.toFixed(1)} ${_du}</text>`;
   }
   svg += `<text x="250" y="56" font-size="11">Hammer: ${sptData.length > 0 && sptData[0].Hammer_Efficiency_pct ? sptData[0].Hammer_Efficiency_pct + '% efficiency' : '—'}</text>`;
+
+  // Logo at top-right of header — same image as the viewer header so it shows
+  // up in the print/PDF output. Read the data URI from the already-injected
+  // .app-logo element so this works for both the default DIGGS logo and any
+  // custom logo uploaded via /api/viewer/wrap.
+  const _logoImg = typeof document !== 'undefined' ? document.querySelector('.app-logo') : null;
+  const _logoSrc = _logoImg && _logoImg.src ? _logoImg.src : '';
+  if (_logoSrc) {
+    const _lw = 160, _lh = 60;
+    const _lx = W - _lw - 10, _ly = (headerH - _lh) / 2;
+    svg += `<image href="${_logoSrc}" x="${_lx}" y="${_ly}" width="${_lw}" height="${_lh}" preserveAspectRatio="xMaxYMid meet"/>`;
+  }
 
   // --- Column headers ---
   const headers = [
     { col: 'depth', text: `Depth\n(${_du})` },
     { col: 'thick', text: `Thick\n(${_du})` },
-    { col: 'desc',  text: 'Soil Description' },
-    { col: 'legend', text: 'USCS' },
+    { col: 'desc',  text: 'Material Description' },
+    { col: 'legend', text: 'Graphic' },
     { col: 'b1', text: 'B1' },
     { col: 'b2', text: 'B2' },
     { col: 'b3', text: 'B3' },
@@ -226,7 +344,7 @@ function createBoringLogSVG(opts) {
     { col: 'pl', text: 'PL%' },
   ].filter(h => cols[h.col]);
 
-  svg += `<rect x="0" y="${headerH}" width="${W}" height="${colHeaderH}" fill="#4680ff" stroke="#dee2e6"/>`;
+  svg += `<rect x="0" y="${headerH}" width="${W}" height="${colHeaderH}" fill="#1c3d28" stroke="#dee2e6"/>`;
   for (const h of headers) {
     const c = cols[h.col];
     svg += `<text x="${c.x + c.w/2}" y="${headerH + 18}" text-anchor="middle" fill="white" font-size="9" font-weight="bold">${h.text}</text>`;
@@ -255,7 +373,7 @@ function createBoringLogSVG(opts) {
     const h = y2 - y1;
     if (h <= 0) continue;
 
-    const style = _getSoilStyle(layer.USCS_Code);
+    const style = _getSoilStyle(layer.USCS_Code, layer.Description);
     const lc = cols.legend;
 
     // Legend column: fill + pattern
@@ -299,10 +417,10 @@ function createBoringLogSVG(opts) {
   // N-value line plot
   if (nPoints.length > 1) {
     const pathD = nPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-    svg += `<path d="${pathD}" fill="none" stroke="#4680ff" stroke-width="1.5"/>`;
+    svg += `<path d="${pathD}" fill="none" stroke="#1c3d28" stroke-width="1.5"/>`;
   }
   for (const p of nPoints) {
-    svg += `<circle cx="${p.x}" cy="${p.y}" r="3" fill="#4680ff"/>`;
+    svg += `<circle cx="${p.x}" cy="${p.y}" r="3" fill="#1c3d28"/>`;
   }
 
   // N-value axis ticks
@@ -315,9 +433,9 @@ function createBoringLogSVG(opts) {
   // --- Water table indicator ---
   if (waterDepth != null) {
     const wy = bodyTop + waterDepth * pxPerFt;
-    svg += `<line x1="0" y1="${wy}" x2="${W}" y2="${wy}" stroke="#1a73e8" stroke-width="1" stroke-dasharray="6,3"/>`;
-    svg += `<polygon points="${cols.depth.x + 5},${wy} ${cols.depth.x + 15},${wy - 8} ${cols.depth.x + 15},${wy + 8}" fill="#1a73e8"/>`;
-    svg += `<text x="${cols.depth.x + 20}" y="${wy + 4}" font-size="8" fill="#1a73e8" font-weight="bold">WT ${waterDepth.toFixed(1)} ${_du}</text>`;
+    svg += `<line x1="0" y1="${wy}" x2="${W}" y2="${wy}" stroke="#c8a84b" stroke-width="1" stroke-dasharray="6,3"/>`;
+    svg += `<polygon points="${cols.depth.x + 5},${wy} ${cols.depth.x + 15},${wy - 8} ${cols.depth.x + 15},${wy + 8}" fill="#c8a84b"/>`;
+    svg += `<text x="${cols.depth.x + 20}" y="${wy + 4}" font-size="8" fill="#c8a84b" font-weight="bold">WT ${waterDepth.toFixed(1)} ${_du}</text>`;
   }
 
   // --- Lab data columns ---

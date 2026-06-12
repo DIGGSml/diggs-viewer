@@ -306,7 +306,16 @@ class DIGGSParser {
             if (index) {
               const pNameEl = this._find(prop, 'propertyName');
               if (pNameEl && pNameEl.textContent) {
-                propertyIndices[parseInt(index)] = pNameEl.textContent.toLowerCase();
+                // propertyName is a display string (may include units); the stable
+                // machine id lives in propertyClass codeSpace="...#tip_resistance"
+                const pcEl = this._find(prop, 'propertyClass');
+                const codeSpace = pcEl ? (pcEl.getAttribute('codeSpace') || '') : '';
+                const code = codeSpace.includes('#')
+                  ? codeSpace.split('#').pop().toLowerCase() : '';
+                propertyIndices[parseInt(index)] = {
+                  name: pNameEl.textContent.toLowerCase(),
+                  code: code,
+                };
               }
             }
           }
@@ -338,19 +347,22 @@ class DIGGSParser {
               Depth_ft: depths[i],
             };
 
-            for (const [idx, propName] of Object.entries(propertyIndices)) {
+            for (const [idx, prop] of Object.entries(propertyIndices)) {
               const vi = parseInt(idx) - 1;
               if (vi < values.length) {
                 const val = parseFloat(values[vi]);
                 if (isNaN(val)) continue;
-                if (propName === 'qc' || propName === 'tip_resistance') {
+                // Match on the stable propertyClass code first; fall back to
+                // propertyName for files that don't populate codeSpace
+                const key = prop.code || prop.name;
+                if (key === 'qc' || key === 'tip_resistance') {
                   rowData.Tip_Resistance_tsf = val;
-                } else if (propName === 'fs' || propName === 'sleeve_friction') {
+                } else if (key === 'fs' || key === 'sleeve_friction') {
                   rowData.Sleeve_Friction_tsf = val;
-                } else if (propName === 'u2' || propName === 'pore_pressure' || propName === 'pore_pressure_u2') {
+                } else if (key === 'u2' || key === 'pore_pressure' || key === 'pore_pressure_u2') {
                   rowData.Pore_Pressure_tsf = val;
                 } else {
-                  rowData[propName] = val;
+                  rowData[prop.name] = val;
                 }
               }
             }
@@ -552,7 +564,16 @@ class DIGGSParser {
 
   extractWaterTable() {
     const waterData = [];
+    const seen = new Set();
+    const push = (borehole, depth) => {
+      if (!borehole || borehole === 'Unknown' || isNaN(depth)) return;
+      const key = `${borehole}__${depth}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      waterData.push({ Borehole: borehole, Water_Depth_ft: depth });
+    };
 
+    // 1) Standard DIGGS: WaterStrikeReading nested inside Borehole.
     for (const bh of this._findAll(this.root, 'Borehole')) {
       let borehole = 'Unknown';
       const nameEl = this._find(bh, 'name');
@@ -561,14 +582,55 @@ class DIGGSParser {
       for (const wsr of this._findAll(bh, 'WaterStrikeReading')) {
         const posEl = this._find(wsr, 'pos');
         if (posEl && posEl.textContent) {
-          const waterDepth = parseFloat(posEl.textContent.trim());
-          if (!isNaN(waterDepth)) {
-            waterData.push({ Borehole: borehole, Water_Depth_ft: waterDepth });
-          }
+          push(borehole, parseFloat(posEl.textContent.trim()));
         }
       }
     }
+
+    // 2) Geosetta/Caltrans-style: Tests whose identifier marks them as a
+    //    groundwater observation. The depth lives in <dataValues> (and is
+    //    mirrored in the LinearExtent pos). Examples:
+    //      <gml:name>Depth to groundwater table observation</gml:name>
+    //      <propertyClass codeSpace="geosetta">groundwater_depth</propertyClass>
+    for (const test of this._findAll(this.root, 'Test')) {
+      if (!this._isGroundwaterTest(test)) continue;
+
+      let borehole = 'Unknown';
+      const sfRef = this._find(test, 'samplingFeatureRef');
+      if (sfRef) borehole = this._resolveBoreholeRef(this._getXlinkHref(sfRef));
+
+      for (const tr of this._findAll(test, 'TestResult')) {
+        let depth = NaN;
+        // Prefer the value in <dataValues> — it's the semantic GW depth.
+        const dvEl = this._find(tr, 'dataValues');
+        if (dvEl && dvEl.textContent) {
+          depth = parseFloat(dvEl.textContent.trim().split(/[\s,]+/)[0]);
+        }
+        // Fallback to the location pos when dataValues is missing.
+        if (isNaN(depth)) {
+          const locEl = this._find(tr, 'PointLocation') || this._find(tr, 'LinearExtent');
+          const posEl = locEl && (this._find(locEl, 'pos') || this._find(locEl, 'posList'));
+          if (posEl && posEl.textContent) {
+            depth = parseFloat(posEl.textContent.trim().split(/\s+/)[0]);
+          }
+        }
+        push(borehole, depth);
+      }
+    }
     return waterData;
+  }
+
+  /** True when a <Test> represents a groundwater-depth observation. */
+  _isGroundwaterTest(test) {
+    const directNameEls = this._findChildren(test, 'name');
+    const gmlName = directNameEls.length && directNameEls[0].textContent
+      ? directNameEls[0].textContent.toLowerCase() : '';
+    if (gmlName.includes('groundwater') || gmlName.includes('water table')) return true;
+    for (const prop of this._findAll(test, 'Property')) {
+      const cls = (this._getText(prop, 'propertyClass') || '').toLowerCase();
+      if (cls === 'groundwater_depth' || cls.includes('groundwater')) return true;
+    }
+    return false;
   }
 
   // --- Extract lab tests ---
@@ -697,6 +759,11 @@ class DIGGSParser {
       : null;
 
     for (const test of this._findAll(this.root, 'Test')) {
+      // Groundwater-depth observations are surfaced via extractWaterTable()
+      // (boring-log WT line, cross-section, SPT card). Skip here so they
+      // don't double-display as a lab-test row.
+      if (this._isGroundwaterTest(test)) continue;
+
       let testType = null;
       let procedureElem = null;
 
@@ -852,6 +919,22 @@ class DIGGSParser {
         else Object.assign(merged.get(key), r);
       }
       labTests['Atterberg Limits'] = [...merged.values()];
+
+      // Derive Plastic Limit when the source only reports LL and PI. Geosetta
+      // exports often emit PL as "N/A" even though PL = LL − PI is exact.
+      const isNum = v => typeof v === 'number' && !isNaN(v);
+      for (const row of labTests['Atterberg Limits']) {
+        const keys = Object.keys(row);
+        const llKey = keys.find(k => k.toLowerCase().includes('liquid'));
+        const piKey = keys.find(k => k.toLowerCase().includes('plasticity'));
+        const plKey = keys.find(k => k.toLowerCase().includes('plastic limit'));
+        if (llKey && piKey && isNum(row[llKey]) && isNum(row[piKey])) {
+          const target = plKey || 'Plastic Limit';
+          if (!isNum(row[target])) {
+            row[target] = row[llKey] - row[piKey];
+          }
+        }
+      }
     }
 
     return labTests;

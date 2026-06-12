@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- DISCLAIMER_COMMENT -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -6,6 +7,18 @@
   <title>DIGGS Viewer</title>
   <style>
     /* APP_CSS */
+    .geosetta-disclaimer-footer {
+      margin-top: 16px;
+      padding: 10px 16px;
+      border-top: 1px solid #d4d4d4;
+      background: #f7f5f0;
+      color: #5a5a5a;
+      font-size: 0.78rem;
+      line-height: 1.4;
+      text-align: center;
+    }
+    .geosetta-disclaimer-footer a { color: #3a7a3a; text-decoration: none; }
+    .geosetta-disclaimer-footer a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -17,7 +30,7 @@
     <div class="header-left">
       <!-- DIGGS_LOGO -->
       <h1>DIGGS Viewer</h1>
-      <div class="subtitle">Geotechnical Data Viewer &middot; v0.1.0</div>
+      <div class="subtitle">Geotechnical Data Viewer &middot; v1.0.0</div>
     </div>
     <div class="header-actions" id="header-actions">
       <!-- Populated by JS based on state -->
@@ -67,7 +80,7 @@
       </div>
       <div class="modal-body">
         <p>A self-contained viewer for <strong>DIGGS</strong> (Data Interchange for Geotechnical and Geoenvironmental Specialists) XML files. Open it, see your data — no installs, no server, no internet required.</p>
-        <p class="version-line">Version 0.1.0</p>
+        <p class="version-line">Version 1.0.0</p>
         <div class="credit">
           Maintained by <strong>DIGGS</strong>.<br>
           <a href="https://github.com/DIGGSml/DIGGS_standalone_viewer" target="_blank" rel="noopener">github.com/DIGGSml/DIGGS_standalone_viewer</a>
@@ -118,5 +131,7 @@
   <script>
     // UI_JS
   </script>
+
+  <footer class="geosetta-disclaimer-footer"><!-- DISCLAIMER_FOOTER --></footer>
 </body>
 </html>
