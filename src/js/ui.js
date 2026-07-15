@@ -8,6 +8,7 @@ const AppState = {
   soundings: [],
   sptData: [],
   cptData: [],
+  dissipationData: [],
   mwdData: [],
   lithology: [],
   waterTable: [],
@@ -144,6 +145,7 @@ function parseAndRender(xmlString) {
     AppState.otherFeatures = AppState.parser.extractOtherSamplingFeatures();
     AppState.sptData = AppState.parser.extractSPTData();
     AppState.cptData = AppState.parser.extractCPTData();
+    AppState.dissipationData = AppState.parser.extractDissipationTests();
     AppState.mwdData = AppState.parser.extractMWDData();
     AppState.lithology = AppState.parser.extractLithology();
     AppState.waterTable = AppState.parser.extractWaterTable();
@@ -188,6 +190,7 @@ function updateTabAvailability() {
     map: hasCoords && navigator.onLine,
     spt: AppState.sptData.length > 0,
     cpt: AppState.cptData.length > 0,
+    dissipation: AppState.dissipationData.length > 0,
     mwd: AppState.mwdData.length > 0,
     'boring-log': AppState.lithology.length > 0,
     'cross-section': AppState.lithology.length > 0 && _crossSectionBoreholes().length >= 2,
@@ -217,6 +220,7 @@ function switchTab(tabId) {
       case 'map': renderMap(); break;
       case 'spt': renderSPT(); break;
       case 'cpt': renderCPT(); break;
+      case 'dissipation': renderDissipation(); break;
       case 'mwd': renderMWD(); break;
       case 'boring-log': renderBoringLog(); break;
       case 'cross-section': renderCrossSection(); break;
@@ -227,7 +231,7 @@ function switchTab(tabId) {
   }
 
   // Re-render on tab switch for charts that need container dimensions
-  if (tabId === 'spt' || tabId === 'cpt') {
+  if (tabId === 'spt' || tabId === 'cpt' || tabId === 'dissipation') {
     setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
   }
   // Leaflet doesn't auto-detect that its container was display:none and is now
@@ -287,6 +291,9 @@ function renderOverview() {
   }
   if (AppState.cptData.length > 0) {
     metrics.push({ label: 'CPT Data Points', value: AppState.cptData.length, color: colors[ci++ % colors.length] });
+  }
+  if (AppState.dissipationData.length > 0) {
+    metrics.push({ label: 'Dissipation (PPD) Tests', value: AppState.dissipationData.length, color: colors[ci++ % colors.length] });
   }
   if (AppState.mwdData.length > 0) {
     const mwdPoints = AppState.mwdData.reduce((s, r) => s + r.depths.length, 0);
@@ -712,6 +719,117 @@ function updateCPTView(soundingName) {
     return row;
   });
   document.getElementById('cpt-table').innerHTML = createStyledTable(tableData, `CPT Data — ${soundingName}`, '#2a5a3a', '400px');
+}
+
+// --- Dissipation (CPT pore-pressure dissipation) tab ---
+//
+// Mirrors the CPT tab structure: a sounding picker up top, then a per-test
+// picker, a u2-vs-time trace chart, and a summary table of the calculated
+// parameters (u0, apparent WT depth, U50, t50, ch). Depths render in the
+// file's depth unit (m for the ConeTec export) and the u2 trace in its own
+// declared unit — the whole point of this tab is that nothing is silently
+// assumed to be feet/tsf.
+function renderDissipation() {
+  const container = document.getElementById('tab-dissipation');
+  const data = AppState.dissipationData;
+
+  // Soundings that actually have PPD tests, in first-seen order.
+  const soundings = [...new Set(data.map(d => d.Sounding_Name))];
+
+  let html = '<div class="controls">';
+  html += '<label>Sounding: <select id="ppd-sounding-select">';
+  for (const s of soundings) {
+    const n = data.filter(d => d.Sounding_Name === s).length;
+    html += `<option value="${escapeHtml(s)}">${escapeHtml(s)} (${n} test${n === 1 ? '' : 's'})</option>`;
+  }
+  html += '</select></label>';
+  html += '<label style="margin-left:16px;">Test depth: <select id="ppd-test-select"></select></label>';
+  html += '</div>';
+
+  html += '<div id="ppd-metrics"></div>';
+  html += '<div class="chart-container" id="ppd-chart"></div>';
+  html += '<div id="ppd-table"></div>';
+  html += `<button class="download-btn" onclick="downloadDissipationCSV()">Download Dissipation CSV</button>`;
+
+  container.innerHTML = html;
+
+  const soundingSelect = document.getElementById('ppd-sounding-select');
+  soundingSelect.addEventListener('change', () => updateDissipationView(soundingSelect.value));
+  if (soundings.length > 0) updateDissipationView(soundings[0]);
+}
+
+/** Tests for the selected sounding, sorted by depth (nulls last). */
+function _ppdTestsForSounding(soundingName) {
+  return AppState.dissipationData
+    .filter(d => d.Sounding_Name === soundingName)
+    .sort((a, b) => (a.Depth == null ? Infinity : a.Depth) - (b.Depth == null ? Infinity : b.Depth));
+}
+
+function updateDissipationView(soundingName) {
+  const tests = _ppdTestsForSounding(soundingName);
+  const depthU = tests[0] && tests[0].Depth_Unit ? tests[0].Depth_Unit : du();
+
+  // Metrics
+  const depths = tests.map(t => t.Depth).filter(v => v != null);
+  const wts = tests.map(t => t.wt_depth).filter(v => v != null);
+  const wtU = (tests.find(t => t.wt_depth_unit) || {}).wt_depth_unit || depthU;
+  document.getElementById('ppd-metrics').innerHTML = createMetricRow([
+    { label: 'PPD Tests', value: tests.length, color: '#1c3d28' },
+    { label: `Depth Range (${depthU})`, value: depths.length ? `${Math.min(...depths).toFixed(2)}–${Math.max(...depths).toFixed(2)}` : '—', color: '#c8a84b' },
+    { label: 'With Params', value: tests.filter(t => t.hasResults).length, color: '#2ecc71' },
+    { label: `Mean WT (${wtU})`, value: wts.length ? (wts.reduce((a, b) => a + b, 0) / wts.length).toFixed(2) : '—', color: '#3498db' },
+  ]);
+
+  // Per-test picker (value = index into the sorted list)
+  const testSelect = document.getElementById('ppd-test-select');
+  let opts = '';
+  tests.forEach((t, i) => {
+    const d = t.Depth != null ? `${t.Depth.toFixed(2)} ${depthU}` : `test ${i + 1}`;
+    const tag = t.trace ? (t.hasResults ? '' : ' · trace only') : ' · no trace';
+    opts += `<option value="${i}">${escapeHtml(d)}${tag}</option>`;
+  });
+  testSelect.innerHTML = opts;
+  testSelect.onchange = () => plotDissipationTrace(tests[parseInt(testSelect.value)], 'ppd-chart');
+
+  // First test's trace
+  if (tests.length > 0) plotDissipationTrace(tests[0], 'ppd-chart');
+  else document.getElementById('ppd-chart').innerHTML = '<p class="no-data">No dissipation tests</p>';
+
+  // Summary table for the sounding
+  const u0U = (tests.find(t => t.u0_unit) || {}).u0_unit || 'kPa';
+  const u50U = (tests.find(t => t.u50_unit) || {}).u50_unit || 'kPa';
+  const t50U = (tests.find(t => t.t50_unit) || {}).t50_unit || 's';
+  const chU = (tests.find(t => t.ch_unit) || {}).ch_unit || 'cm2/min';
+  const tableData = tests.map(t => {
+    const row = {};
+    row[`Depth (${depthU})`] = t.Depth;
+    row[`u0 (${u0U})`] = t.u0;
+    row[`Apparent WT (${wtU})`] = t.wt_depth;
+    row[`U50 (${u50U})`] = t.u50;
+    row[`t50 (${t50U})`] = t.t50;
+    row[`ch (${chU})`] = t.ch;
+    row['Trace pts'] = t.trace ? t.trace.time.length : 0;
+    return row;
+  });
+  document.getElementById('ppd-table').innerHTML =
+    createStyledTable(tableData, `Dissipation Tests — ${soundingName}`, '#2a5a3a', '400px');
+}
+
+/** Flatten all PPD tests into a CSV-friendly table (one row per test). */
+function downloadDissipationCSV() {
+  const rows = AppState.dissipationData.map(t => ({
+    Sounding: t.Sounding_Name,
+    Depth: t.Depth,
+    Depth_Unit: t.Depth_Unit,
+    u0: t.u0, u0_unit: t.u0_unit,
+    Apparent_WT: t.wt_depth, WT_unit: t.wt_depth_unit,
+    U50: t.u50, U50_unit: t.u50_unit,
+    t50: t.t50, t50_unit: t.t50_unit,
+    ch: t.ch, ch_unit: t.ch_unit,
+    trace_points: t.trace ? t.trace.time.length : 0,
+    u2_unit: t.trace ? t.trace.u2Unit : '',
+  }));
+  downloadCSV(rows, 'dissipation_tests.csv');
 }
 
 // --- MWD tab ---

@@ -76,6 +76,40 @@ class DIGGSParser {
     return el.getAttributeNS(this.gml_ns, 'id') || el.getAttribute('gml:id') || '';
   }
 
+  /**
+   * Best-effort file-level depth unit (raw, uncleaned).
+   *
+   * CPT/PPD depths come from a `posList`/`pos` that references a linear
+   * spatial reference system (`srsName="#SF_LSRS_…"`); the authoritative
+   * unit for those linear-referenced depths lives in that LSRS's
+   * `<LinearReferencingMethod><units>` (e.g. `m`). The older code derived the
+   * depth label ONLY from a `<totalMeasuredDepth uom="…">`, so a file that
+   * declared meters on the LRM but omitted the uom on totalMeasuredDepth
+   * would fall through to the hardcoded `ft` default and mislabel depths as
+   * feet — exactly the "depths reported in feet where uom is meters" bug.
+   *
+   * Resolution order: LRM units → totalMeasuredDepth uom → feet.
+   * Cached after first resolution.
+   */
+  _fileDepthUnitRaw() {
+    if (this._depthUnitRaw !== undefined) return this._depthUnitRaw;
+    let unit = null;
+    const lrm = this._find(this.root, 'LinearReferencingMethod');
+    if (lrm) {
+      const u = this._getText(lrm, 'units');
+      if (u) unit = u;
+    }
+    if (!unit) {
+      const depthEl = this._find(this.root, 'totalMeasuredDepth');
+      if (depthEl) {
+        const uom = depthEl.getAttribute('uom');
+        if (uom) unit = uom;
+      }
+    }
+    this._depthUnitRaw = unit || 'ft';
+    return this._depthUnitRaw;
+  }
+
   // --- Sounding lookup ---
 
   _buildSoundingLookup() {
@@ -390,6 +424,153 @@ class DIGGSParser {
     }
 
     return cptData;
+  }
+
+  // --- Extract CPT pore-pressure dissipation (PPD) tests ---
+  //
+  // A PPD test in DIGGS lives inside a <Test> alongside its parent CPT
+  // sounding. Two halves matter:
+  //   outcome  > TestResult > location/PointLocation/pos  → test depth
+  //            > results (or <results xsi:nil="true"/>)    → scalar params
+  //              (u0, apparent WT depth, U50, t50, ch)
+  //   procedure> PorePressureDissipationTest
+  //            > dissipationTimeSeries > TemporalResult
+  //                > timeDomain/TimeIntervalList/timeIntervalList → time axis
+  //                > results/ResultSet/dataValues              → u2 trace
+  //
+  // The 233-of-400 "NIL option" tests carry a valid trace but no calculated
+  // parameters (results xsi:nil) — those still render as a dissipation curve.
+  // Depths use the file depth unit (m here), NOT the hardcoded feet that the
+  // production viewer was mislabeling. u2 trace carries its own uom
+  // (e.g. ftH2O[39degF]) which we surface verbatim rather than assume tsf.
+  extractDissipationTests() {
+    const tests = [];
+    const depthUnit = _cleanUnitLabel(this._fileDepthUnitRaw()) || this._fileDepthUnitRaw();
+
+    // Map scalar-result propertyClass codes to output keys.
+    const SCALAR_KEYS = {
+      pore_pressure_equil: 'u0',
+      water_depth: 'wt_depth',
+      u50: 'u50',
+      t50: 't50',
+      coef_consolidation_horiz: 'ch',
+    };
+
+    for (const test of this._findAll(this.root, 'Test')) {
+      const ppdEl = this._find(test, 'PorePressureDissipationTest');
+      if (!ppdEl) continue;
+
+      // Sounding reference
+      let soundingId = 'Unknown', soundingName = 'Unknown';
+      const sfRef = this._find(test, 'samplingFeatureRef');
+      if (sfRef) {
+        const href = this._getXlinkHref(sfRef);
+        if (href) {
+          soundingId = href.replace('#', '');
+          if (this.soundingsById[soundingId]) {
+            soundingName = this.soundingsById[soundingId].name;
+          } else {
+            soundingName = soundingId.includes('_')
+              ? soundingId.split('_').slice(1).join('_') : soundingId;
+          }
+        }
+      }
+
+      const rec = {
+        Sounding_ID: soundingId,
+        Sounding_Name: soundingName,
+        Depth: null,
+        Depth_Unit: depthUnit,
+        u0: null, u0_unit: '',
+        wt_depth: null, wt_depth_unit: '',
+        u50: null, u50_unit: '',
+        t50: null, t50_unit: '',
+        ch: null, ch_unit: '',
+        hasResults: false,
+        trace: null,
+      };
+
+      // --- outcome: depth + scalar results ---
+      const outcomeEl = this._find(test, 'outcome');
+      if (outcomeEl) {
+        const posEl = this._find(outcomeEl, 'pos');
+        if (posEl && posEl.textContent) {
+          const d = parseFloat(posEl.textContent.trim().split(/\s+/)[0]);
+          if (!isNaN(d)) rec.Depth = d;
+        }
+
+        const resultsEl = this._find(outcomeEl, 'results');
+        const nil = resultsEl
+          ? (resultsEl.getAttributeNS('http://www.w3.org/2001/XMLSchema-instance', 'nil')
+             || resultsEl.getAttribute('xsi:nil'))
+          : null;
+        if (resultsEl && nil !== 'true') {
+          const rs = this._find(resultsEl, 'ResultSet');
+          if (rs) {
+            // Build index → {code, uom} map from Property declarations.
+            const propIndex = {};
+            for (const prop of this._findAll(rs, 'Property')) {
+              const idx = prop.getAttribute('index');
+              if (!idx) continue;
+              const pcEl = this._find(prop, 'propertyClass');
+              const codeSpace = pcEl ? (pcEl.getAttribute('codeSpace') || '') : '';
+              const code = codeSpace.includes('#')
+                ? codeSpace.split('#').pop().toLowerCase() : '';
+              const uomEl = this._find(prop, 'uom');
+              const uom = uomEl && uomEl.textContent ? uomEl.textContent.trim() : '';
+              propIndex[parseInt(idx)] = { code, uom };
+            }
+
+            const dvEl = this._find(rs, 'dataValues');
+            if (dvEl && dvEl.textContent) {
+              const cs = dvEl.getAttribute('cs') || ',';
+              const values = dvEl.textContent.trim().split(cs);
+              for (const [idxStr, meta] of Object.entries(propIndex)) {
+                const key = SCALAR_KEYS[meta.code];
+                if (!key) continue;
+                const val = parseFloat(values[parseInt(idxStr) - 1]);
+                if (isNaN(val)) continue;
+                rec[key] = val;
+                rec[`${key}_unit`] = _cleanUnitLabel(meta.uom) || meta.uom;
+                rec.hasResults = true;
+              }
+            }
+          }
+        }
+      }
+
+      // --- procedure: dissipation trace (time vs u2) ---
+      const tilEl = this._find(ppdEl, 'TimeIntervalList');
+      const dvTrace = this._find(ppdEl, 'dataValues');
+      if (tilEl && dvTrace) {
+        const timeUnit = tilEl.getAttribute('unit') || 's';
+        const tListEl = this._find(tilEl, 'timeIntervalList');
+        const time = (tListEl && tListEl.textContent)
+          ? tListEl.textContent.trim().split(/\s+/).map(parseFloat).filter(v => !isNaN(v))
+          : [];
+        const u2 = dvTrace.textContent.trim().split(/\s+/).map(parseFloat).filter(v => !isNaN(v));
+
+        // u2 unit lives on the trace ResultSet's Property (pore_pressure_u2).
+        let u2Unit = '';
+        const u2UomEl = this._find(ppdEl, 'uom'); // estimatedIr uom is an attr, so this is the Property <uom>
+        if (u2UomEl && u2UomEl.textContent) u2Unit = _cleanUnitLabel(u2UomEl.textContent.trim()) || u2UomEl.textContent.trim();
+
+        if (time.length && u2.length) {
+          const n = Math.min(time.length, u2.length);
+          rec.trace = {
+            time: time.slice(0, n),
+            timeUnit,
+            u2: u2.slice(0, n),
+            u2Unit,
+          };
+        }
+      }
+
+      // Keep the test if it has either a trace or calculated results.
+      if (rec.trace || rec.hasResults || rec.Depth != null) tests.push(rec);
+    }
+
+    return tests;
   }
 
   // --- Extract MWD (Measurement While Drilling) ---
@@ -954,15 +1135,12 @@ class DIGGSParser {
       cptU2Label: '',
     };
 
-    // Depth unit — from first borehole or sounding totalMeasuredDepth
-    const depthEl = this._find(this.root, 'totalMeasuredDepth');
-    if (depthEl) {
-      const uom = depthEl.getAttribute('uom');
-      if (uom) {
-        units.depth = uom;
-        units.depthLabel = _cleanUnitLabel(uom);
-      }
-    }
+    // Depth unit — prefer the linear-referencing method's declared units
+    // (authoritative for the CPT/PPD posList depths), then fall back to a
+    // totalMeasuredDepth uom, then feet. See _fileDepthUnitRaw().
+    const rawDepthUnit = this._fileDepthUnitRaw();
+    units.depth = rawDepthUnit;
+    units.depthLabel = _cleanUnitLabel(rawDepthUnit) || rawDepthUnit;
 
     // CPT units — from Property elements in the first CPT test
     for (const test of this._findAll(this.root, 'Test')) {

@@ -341,3 +341,64 @@ function plotMWDProfile(record, containerId) {
     Plotly.newPlot(div.id, [trace], layout, { responsive: true, displayModeBar: false });
   });
 }
+
+// --- CPT pore-pressure dissipation trace ---
+//
+// Plots a single PPD test's u2-vs-time decay curve. Time on a log X axis
+// (standard for dissipation interpretation — the t50 read is a log-time
+// midpoint), u2 on the linear Y axis labeled with the trace's OWN uom (the
+// ConeTec file records u2 as ftH2O, not tsf). Depth is shown in the file's
+// depth unit — never assumed to be feet. A dashed marker flags t50 when the
+// test carries calculated parameters.
+function plotDissipationTrace(test, containerId) {
+  const c = document.getElementById(containerId);
+  if (!test || !test.trace || !test.trace.time.length) {
+    c.innerHTML = '<p class="no-data">No dissipation trace recorded for this test</p>';
+    return;
+  }
+  const t = test.trace;
+  const axStyle = getAxisStyle();
+  const u2Label = t.u2Unit ? `Pore pressure u2 (${t.u2Unit})` : 'Pore pressure u2';
+  const timeLabel = `Time (${t.timeUnit || 's'})`;
+
+  const traces = [{
+    x: t.time,
+    y: t.u2,
+    mode: 'lines',
+    type: 'scatter',
+    line: { color: '#3498db', width: 1.8 },
+    name: 'u2',
+    hovertemplate: `t=%{x} ${t.timeUnit || 's'}<br>u2=%{y:.2f} ${t.u2Unit || ''}<extra></extra>`,
+  }];
+
+  const shapes = [];
+  const annotations = [];
+  if (test.t50 != null && test.t50 > 0) {
+    shapes.push({
+      type: 'line', x0: test.t50, x1: test.t50, yref: 'paper', y0: 0, y1: 1,
+      line: { color: '#e74c3c', width: 1, dash: 'dash' },
+    });
+    annotations.push({
+      x: Math.log10(test.t50), y: 1, yref: 'paper', xanchor: 'left', yanchor: 'bottom',
+      text: `t50 = ${test.t50} ${test.t50_unit || 's'}`, showarrow: false,
+      font: { size: 10, color: '#e74c3c' },
+    });
+  }
+
+  const depthTxt = test.Depth != null
+    ? `${test.Depth.toFixed(2)} ${test.Depth_Unit || ''}`.trim() : 'unknown depth';
+  const layout = {
+    title: { text: `Dissipation — ${test.Sounding_Name} @ ${depthTxt}`, font: { size: 13 } },
+    xaxis: { ...axStyle, title: timeLabel, type: 'log' },
+    yaxis: { ...axStyle, title: u2Label, rangemode: 'tozero' },
+    shapes,
+    annotations,
+    margin: { t: 44, b: 48, l: 64, r: 20 },
+    plot_bgcolor: '#fff',
+    paper_bgcolor: '#fff',
+    height: 460,
+    showlegend: false,
+  };
+
+  Plotly.newPlot(containerId, traces, layout, { responsive: true, displayModeBar: true });
+}
