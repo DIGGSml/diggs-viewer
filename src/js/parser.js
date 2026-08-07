@@ -161,8 +161,10 @@ class DIGGSParser {
    *      (e.g. "Lat Lon H" per the EPSG:4326 registry definition, which
    *      Geosetta emits) — first label starting with "lat" means lat-first.
    *   2. Value ranges: a |value| > 90 can only be a longitude.
-   *   3. Legacy DIGGS convention (lon lat elev), which most existing
-   *      community instance files use when nothing is declared.
+   *   3. EPSG:4326 registry axis order (lat lon elev). Note this default
+   *      misreads undeclared legacy lon-first files whose longitude is
+   *      within ±90 (e.g. the eastern US) — producers of such files should
+   *      declare `axisLabels`.
    */
   _parseGeoPos(posEl) {
     const out = { Latitude: null, Longitude: null, Elevation: null };
@@ -182,7 +184,7 @@ class DIGGSParser {
     if (latFirst === null) {
       if (Math.abs(coords[0]) > 90) latFirst = false;
       else if (Math.abs(coords[1]) > 90) latFirst = true;
-      else latFirst = false; // legacy lon-first convention
+      else latFirst = true; // EPSG:4326 registry order
     }
 
     out.Latitude = latFirst ? coords[0] : coords[1];
