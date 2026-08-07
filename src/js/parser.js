@@ -154,6 +154,43 @@ class DIGGSParser {
     return stripped;
   }
 
+  /**
+   * Parse a geographic `gml:pos` into {Latitude, Longitude, Elevation}.
+   * Axis order is resolved in priority order:
+   *   1. An `axisLabels` attribute on the pos element or an ancestor geometry
+   *      (e.g. "Lat Lon H" per the EPSG:4326 registry definition, which
+   *      Geosetta emits) — first label starting with "lat" means lat-first.
+   *   2. Value ranges: a |value| > 90 can only be a longitude.
+   *   3. Legacy DIGGS convention (lon lat elev), which most existing
+   *      community instance files use when nothing is declared.
+   */
+  _parseGeoPos(posEl) {
+    const out = { Latitude: null, Longitude: null, Elevation: null };
+    if (!posEl || !posEl.textContent) return out;
+    const coords = posEl.textContent.trim().split(/\s+/).map(parseFloat);
+    if (coords.length < 2 || coords.some(isNaN)) return out;
+
+    let latFirst = null;
+    let node = posEl;
+    for (let hops = 0; node && hops < 4; node = node.parentElement, hops++) {
+      const labels = node.getAttribute && node.getAttribute('axisLabels');
+      if (labels) {
+        latFirst = /^lat/i.test(labels.trim());
+        break;
+      }
+    }
+    if (latFirst === null) {
+      if (Math.abs(coords[0]) > 90) latFirst = false;
+      else if (Math.abs(coords[1]) > 90) latFirst = true;
+      else latFirst = false; // legacy lon-first convention
+    }
+
+    out.Latitude = latFirst ? coords[0] : coords[1];
+    out.Longitude = latFirst ? coords[1] : coords[0];
+    if (coords.length > 2) out.Elevation = coords[2];
+    return out;
+  }
+
   // --- Extract boreholes ---
 
   extractBoreholes() {
@@ -168,16 +205,16 @@ class DIGGSParser {
       const depthUnit = depthEl ? (depthEl.getAttribute('uom') || 'ft') : 'ft';
 
       const posEl = this._find(bh, 'pos');
-      const coords = posEl && posEl.textContent ? posEl.textContent.trim().split(/\s+/) : [];
+      const geo = this._parseGeoPos(posEl);
 
       boreholes.push({
         Name: name,
         ID: gmlId,
         Total_Depth: depth,
         Depth_Unit: depthUnit,
-        Latitude: coords.length > 1 ? parseFloat(coords[1]) : null,
-        Longitude: coords.length > 0 ? parseFloat(coords[0]) : null,
-        Elevation: coords.length > 2 ? parseFloat(coords[2]) : null,
+        Latitude: geo.Latitude,
+        Longitude: geo.Longitude,
+        Elevation: geo.Elevation,
       });
     }
     return boreholes;
@@ -194,16 +231,16 @@ class DIGGSParser {
       const depthUnit = depthEl ? (depthEl.getAttribute('uom') || 'ft') : 'ft';
 
       const posEl = this._find(sounding, 'pos');
-      const coords = posEl && posEl.textContent ? posEl.textContent.trim().split(/\s+/) : [];
+      const geo = this._parseGeoPos(posEl);
 
       soundings.push({
         Name: info.name,
         ID: gmlId,
         Total_Depth: depth,
         Depth_Unit: depthUnit,
-        Latitude: coords.length > 1 ? parseFloat(coords[1]) : null,
-        Longitude: coords.length > 0 ? parseFloat(coords[0]) : null,
-        Elevation: coords.length > 2 ? parseFloat(coords[2]) : null,
+        Latitude: geo.Latitude,
+        Longitude: geo.Longitude,
+        Elevation: geo.Elevation,
       });
     }
     return soundings;
@@ -1289,7 +1326,7 @@ class DIGGSParser {
         const depthUnit = depthEl ? (depthEl.getAttribute('uom') || 'ft') : 'ft';
 
         const posEl = this._find(child, 'pos');
-        const coords = posEl && posEl.textContent ? posEl.textContent.trim().split(/\s+/) : [];
+        const geo = this._parseGeoPos(posEl);
 
         features.push({
           Type: child.localName,
@@ -1297,9 +1334,9 @@ class DIGGSParser {
           ID: gmlId,
           Total_Depth: depth,
           Depth_Unit: depthUnit,
-          Latitude: coords.length > 1 ? parseFloat(coords[1]) : null,
-          Longitude: coords.length > 0 ? parseFloat(coords[0]) : null,
-          Elevation: coords.length > 2 ? parseFloat(coords[2]) : null,
+          Latitude: geo.Latitude,
+          Longitude: geo.Longitude,
+          Elevation: geo.Elevation,
         });
       }
     }
