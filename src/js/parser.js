@@ -22,6 +22,7 @@ class DIGGSParser {
     this._buildSoundingLookup();
     this.boreholesById = {};
     this._buildBoreholeLookup();
+    this._dedupeFeatureNames();
   }
 
   // --- Helpers ---
@@ -133,6 +134,41 @@ class DIGGSParser {
   }
 
   /**
+   * Boreholes and soundings are keyed by their `<name>` text throughout the
+   * viewer (SPT/lithology joins, UI selection, cross-sections), so features
+   * sharing one name would collapse into a single entry. Some exporters
+   * (e.g. Geosetta files where every boring's `location` is the project
+   * street address) emit identical names for every hole. When a name is
+   * shared, append a short suffix per feature — the trailing number of its
+   * gml:id when it has one (`Borehole_Num_12` → `#12`), otherwise a running
+   * index — so each hole stays distinct.
+   */
+  _dedupeFeatureNames() {
+    const entries = [];
+    for (const [id, info] of Object.entries(this.soundingsById)) {
+      entries.push({ kind: 's', id, name: info.name });
+    }
+    for (const [id, name] of Object.entries(this.boreholesById)) {
+      entries.push({ kind: 'b', id, name });
+    }
+
+    const counts = {};
+    for (const e of entries) counts[e.name] = (counts[e.name] || 0) + 1;
+
+    const used = new Set(entries.map(e => e.name));
+    let fallbackSeq = 0;
+    for (const e of entries) {
+      if (counts[e.name] < 2) continue;
+      const m = /(\d+)\s*$/.exec(e.id);
+      let candidate = m ? `${e.name} #${m[1]}` : `${e.name} #${++fallbackSeq}`;
+      while (used.has(candidate)) candidate = `${e.name} #${++fallbackSeq}`;
+      used.add(candidate);
+      if (e.kind === 's') this.soundingsById[e.id].name = candidate;
+      else this.boreholesById[e.id] = candidate;
+    }
+  }
+
+  /**
    * Resolve an xlink:href that points to a Borehole into the canonical
    * borehole Name (`<name>` element text). The DIGGS spec lets authors pick
    * gml:id values freely (`Location_BH-1`, `BH-1`, `bh_loc_001`, etc.), so
@@ -198,9 +234,14 @@ class DIGGSParser {
   extractBoreholes() {
     const boreholes = [];
     for (const bh of this._findAll(this.root, 'Borehole')) {
-      const nameEl = this._find(bh, 'name');
-      const name = nameEl && nameEl.textContent ? nameEl.textContent.trim() : 'Unknown';
       const gmlId = this._getGmlId(bh);
+      // Prefer the lookup name — it carries de-dup suffixes for files where
+      // several boreholes share one <name>.
+      let name = gmlId && this.boreholesById[gmlId];
+      if (!name) {
+        const nameEl = this._find(bh, 'name');
+        name = nameEl && nameEl.textContent ? nameEl.textContent.trim() : 'Unknown';
+      }
 
       const depthEl = this._find(bh, 'totalMeasuredDepth');
       const depth = depthEl && depthEl.textContent ? parseFloat(depthEl.textContent) : null;
@@ -796,8 +837,13 @@ class DIGGSParser {
     // 1) Standard DIGGS: WaterStrikeReading nested inside Borehole.
     for (const bh of this._findAll(this.root, 'Borehole')) {
       let borehole = 'Unknown';
-      const nameEl = this._find(bh, 'name');
-      if (nameEl && nameEl.textContent) borehole = nameEl.textContent.trim();
+      const gmlId = this._getGmlId(bh);
+      if (gmlId && this.boreholesById[gmlId]) {
+        borehole = this.boreholesById[gmlId];
+      } else {
+        const nameEl = this._find(bh, 'name');
+        if (nameEl && nameEl.textContent) borehole = nameEl.textContent.trim();
+      }
 
       for (const wsr of this._findAll(bh, 'WaterStrikeReading')) {
         const posEl = this._find(wsr, 'pos');
