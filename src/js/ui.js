@@ -843,12 +843,26 @@ function renderMWD() {
   const container = document.getElementById('tab-mwd');
   const records = AppState.mwdData;
 
+  // A hole drilled over several sessions yields one record per session, all
+  // sharing a borehole name — so lead with the log's own date where the file
+  // carries a time domain, and fall back to the raw id when it doesn't.
+  const labels = records.map(r => {
+    const day = mwdLogDate(r);
+    if (day) return `${r.Borehole} — ${day}`;
+    return `${r.Borehole}${r.MWD_ID && r.MWD_ID !== r.Borehole ? ` (${r.MWD_ID})` : ''}`;
+  });
+  // Two runs on the same day would read identically; disambiguate with the id.
+  labels.forEach((label, i) => {
+    if (labels.filter(other => other === label).length > 1 && records[i].MWD_ID) {
+      labels[i] = `${label} (${records[i].MWD_ID})`;
+    }
+  });
+
   let html = '<div class="controls">';
   html += '<label>MWD Log: <select id="mwd-record-select">';
-  for (const r of records) {
-    const label = `${r.Borehole}${r.MWD_ID && r.MWD_ID !== r.Borehole ? ` (${r.MWD_ID})` : ''}`;
-    html += `<option value="${escapeHtml(r.MWD_ID)}">${escapeHtml(label)}</option>`;
-  }
+  records.forEach((r, i) => {
+    html += `<option value="${escapeHtml(r.MWD_ID)}">${escapeHtml(labels[i])}</option>`;
+  });
   html += '</select></label>';
   html += '</div>';
 
@@ -861,6 +875,14 @@ function renderMWD() {
   const select = document.getElementById('mwd-record-select');
   select.addEventListener('change', () => updateMWDView(select.value));
   if (records.length > 0) updateMWDView(records[0].MWD_ID);
+}
+
+// Calendar date (YYYY-MM-DD) a log was recorded, from its first timestamp.
+// Empty string when the file carries no time domain.
+function mwdLogDate(record) {
+  const first = record.timestamps && record.timestamps.length ? record.timestamps[0] : '';
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(first);
+  return m ? m[1] : '';
 }
 
 function updateMWDView(mwdId) {
@@ -904,7 +926,9 @@ function updateMWDView(mwdId) {
     }
     tableData.push(row);
   }
-  const title = `MWD Sample — ${record.Borehole} (first ${sampleN} of ${record.depths.length} rows)`;
+  const day = mwdLogDate(record);
+  const title = `MWD Sample — ${record.Borehole}${day ? ` (${day})` : ''}`
+    + ` (first ${sampleN} of ${record.depths.length} rows)`;
   document.getElementById('mwd-table').innerHTML = createStyledTable(tableData, title, '#2a6b3f', '400px');
 }
 
